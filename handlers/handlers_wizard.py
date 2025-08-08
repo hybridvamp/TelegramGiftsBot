@@ -1,8 +1,43 @@
+"""
+Модуль хендлеров для пошагового редактирования конфигурации (FSM Wizard).
+
+Этот модуль содержит функции для:
+- Управления состояниями FSM для редактирования конфигурации.
+- Обработки ввода данных для профилей и userbot.
+- Формирования и обновления меню управления профилями и userbot.
+- Подключения, отключения и удаления userbot-сессий.
+
+Основные функции:
+- userbot_menu: Формирует меню управления userbot.
+- profiles_menu: Показывает меню управления профилями.
+- on_userbot_menu: Обрабатывает колбэк для меню userbot.
+- confirm_userbot_delete: Запрашивает подтверждение удаления userbot.
+- userbot_enable_handler: Включает userbot.
+- userbot_disable_handler: Отключает userbot.
+- init_userbot_handler: Запускает процесс подключения userbot.
+- get_api_id: Обрабатывает ввод api_id.
+- get_api_hash: Обрабатывает ввод api_hash.
+- get_phone: Сохраняет номер телефона для userbot.
+- get_code: Обрабатывает код подтверждения.
+- get_password: Завершает авторизацию userbot.
+- on_profiles_menu: Открывает меню управления профилями.
+- profile_text: Формирует текстовое описание параметров профиля.
+- profile_edit_keyboard: Создаёт клавиатуру для редактирования профиля.
+- on_profile_edit: Открывает экран редактирования профиля.
+- on_profile_name_entered: Обрабатывает ввод нового имени профиля.
+- edit_profile_min_price: Изменяет минимальную цену подарков.
+- edit_profile_min_supply: Изменяет минимальный supply подарков.
+- edit_profile_limit: Изменяет лимит звёзд для профиля.
+- edit_profile_count: Изменяет количество подарков в профиле.
+- edit_profile_target: Изменяет получателя подарков.
+"""
+
 # --- Стандартные библиотеки ---
 import logging
 
 # --- Сторонние библиотеки ---
-from aiogram import Router, F, Bot
+from aiogram import Router, F, Bot, Dispatcher
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import Message, CallbackQuery, LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -10,11 +45,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
 
 # --- Внутренние модули ---
-from services.config import get_valid_config, get_target_display, save_config
+from services.config import get_valid_config, get_target_display, save_config, get_deposit_enabled
 from services.menu import update_menu, payment_keyboard
 from services.balance import refresh_balance, refund_all_star_payments
-from services.config import CURRENCY, MAX_PROFILES, ALLOWED_USER_IDS, add_profile, remove_profile, update_profile
-from services.userbot import is_userbot_active, userbot_send_self, delete_userbot_session, start_userbot, continue_userbot_signin, finish_userbot_signin
+from services.config import CURRENCY, MAX_PROFILES, DEVICE_MODELS, SYSTEM_VERSIONS, APP_VERSIONS, add_profile, remove_profile, update_profile, get_allowed_users
+from services.userbot import is_userbot_active, is_userbot_premium, userbot_send_self, delete_userbot_session, start_userbot, continue_userbot_signin, finish_userbot_signin, RESTART_REQUIRED
 from middlewares.access_control import show_guest_menu
 from utils.misc import now_str, is_valid_profile_name, PHONE_REGEX, API_HASH_REGEX
 
@@ -54,6 +89,28 @@ class ConfigWizard(StatesGroup):
     userbot_password = State()
 
 
+def create_digit_keyboard() -> InlineKeyboardMarkup:
+    """Создаёт инлайн-клавиатуру с цифрами для ввода кода."""
+    builder = InlineKeyboardBuilder()
+    buttons = [
+        InlineKeyboardButton(text='1️⃣', callback_data='code_1'),
+        InlineKeyboardButton(text='2️⃣', callback_data='code_2'),
+        InlineKeyboardButton(text='3️⃣', callback_data='code_3'),
+        InlineKeyboardButton(text='4️⃣', callback_data='code_4'),
+        InlineKeyboardButton(text='5️⃣', callback_data='code_5'),
+        InlineKeyboardButton(text='6️⃣', callback_data='code_6'),
+        InlineKeyboardButton(text='7️⃣', callback_data='code_7'),
+        InlineKeyboardButton(text='8️⃣', callback_data='code_8'),
+        InlineKeyboardButton(text='9️⃣', callback_data='code_9'),
+        InlineKeyboardButton(text='⬅️', callback_data='code_delete'),
+        InlineKeyboardButton(text='0️⃣', callback_data='code_0'),
+        InlineKeyboardButton(text='🆗', callback_data='code_enter')
+    ]
+    builder.add(*buttons)
+    builder.adjust(3)
+    return builder.as_markup()
+
+
 @wizard_router.callback_query(F.data == "userbot_menu")
 async def on_userbot_menu(call: CallbackQuery):
     """
@@ -63,19 +120,35 @@ async def on_userbot_menu(call: CallbackQuery):
     await call.answer()
 
 
-async def userbot_menu(message: Message, user_id: int, edit: bool = False):
+@wizard_router.callback_query(F.data == "userbot_menu_edit")
+async def on_userbot_menu_edit(call: CallbackQuery):
+    """
+    Вызывает обновление меню userbot'а после колбэка.
+    """
+    await userbot_menu(call.message, call.from_user.id, True)
+    await call.answer()
+
+
+async def userbot_menu(message: Message, user_id: int, edit: bool = False) -> None:
     """
     Формирует и отправляет (или редактирует) меню управления userbot'ом для пользователя.
+
+    Аргументы:
+    - message: Объект сообщения, к которому прикрепляется меню.
+    - user_id: ID пользователя, для которого формируется меню.
+    - edit: Если True, меню редактируется, иначе отправляется новое.
     """
     config = await get_valid_config(user_id)
     userbot = config.get("USERBOT", {})
 
+    userbot_interval = userbot.get("UPDATE_INTERVAL")
     userbot_username = userbot.get("USERNAME")
     userbot_user_id = userbot.get("USER_ID")
     phone = userbot.get("PHONE")
     enabled = userbot.get("ENABLED", False)
 
     if is_userbot_active(user_id):
+        is_premium = await is_userbot_premium(user_id)
         status_button = InlineKeyboardButton(
             text="🔕 Выключить" if enabled else "🔔 Включить",
             callback_data="userbot_disable" if enabled else "userbot_enable"
@@ -84,7 +157,9 @@ async def userbot_menu(message: Message, user_id: int, edit: bool = False):
             "✅ <b>Юзербот подключён.</b>\n\n"
             f"┌ <b>Пользователь:</b> {'@' + userbot_username if userbot_username else '—'} (<code>{userbot_user_id}</code>)\n"
             f"├ <b>Номер:</b> <code>{phone or '—'}</code>\n"
-            f"└ <b>Статус:</b> {'🔔 Включён ' if enabled else '🔕 Выключен'}\n\n"
+            f"├ <b>Статус:</b> {'🔔 Включён ' if enabled else '🔕 Выключен'}\n"
+            f"├ <b>Премиум аккаунт:</b> {'Да' if is_premium else '⚠️ Нет'}\n"
+            f"└ <b>Интервал обновления:</b> {userbot_interval} секунд\n\n"
             f"❗️ Статус 🔕 <b>приостанавливает</b> работу <b>юзербота</b>."
         )
         keyboard = [
@@ -94,8 +169,20 @@ async def userbot_menu(message: Message, user_id: int, edit: bool = False):
             ],
             [
                 InlineKeyboardButton(text="📘 Инструкция", callback_data="show_userbot_help"),
+                InlineKeyboardButton(text="⏳ Интервал", callback_data="userbot_interval"),
+            ],
+            [
                 InlineKeyboardButton(text="☰ Меню", callback_data="userbot_main_menu")
             ]
+        ]
+    elif RESTART_REQUIRED.get(user_id):
+        text = (
+            "⚠️ <b>Вы запустили программу на платформе Windows или macOS</b>.\n"
+            "🔁 Чтобы успешно <b>отключить</b> сессию или добавить нового Юзербота, пожалуйста, <b>перезапустите программу</b>."
+        )
+        keyboard = [
+            [InlineKeyboardButton(text="📘 Инструкция", callback_data="show_userbot_help")],
+            [InlineKeyboardButton(text="☰ Меню", callback_data="userbot_main_menu")]
         ]
     else:
         text = (
@@ -124,6 +211,60 @@ async def userbot_menu(message: Message, user_id: int, edit: bool = False):
         logger.error(f"⚠️ Ошибка при обновлении меню: {e}")
 
 
+@wizard_router.callback_query(F.data == "userbot_interval")
+async def on_userbot_interval(call: CallbackQuery):
+    """
+    Открывает меню выбора интервала обновления юзербота.
+    """
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="30 секунд", callback_data="edit_userbot_interval_30"),
+            InlineKeyboardButton(text="45 секунд", callback_data="edit_userbot_interval_45")
+        ],
+        [
+            InlineKeyboardButton(text="60 секунд", callback_data="edit_userbot_interval_60"),
+            InlineKeyboardButton(text="90 секунд", callback_data="edit_userbot_interval_90")
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Юзербот", callback_data="userbot_menu_edit"),
+            InlineKeyboardButton(text="☰ Меню", callback_data="userbot_main_menu")
+        ]
+    ])
+    await call.message.edit_text(
+        "⏳ Выберите интервал обновления списка подарков через юзербот:\n\n"
+        "❗️ Рекомендуется использовать <b>45 секунд</b>.\n"
+        "⚠️ Частые запросы могут привести к <b>блокировке или ограничению со стороны Telegram</b>.",
+        reply_markup=kb
+    )
+    await call.answer()
+
+
+@wizard_router.callback_query(lambda c: c.data.startswith("edit_userbot_interval_"))
+async def edit_userbot_interval(call: CallbackQuery):
+    """
+    Обрабатывает изменение интервала обновления userbot.
+    """
+    interval_mapping = {
+        "edit_userbot_interval_30": 30,
+        "edit_userbot_interval_45": 45,
+        "edit_userbot_interval_60": 60,
+        "edit_userbot_interval_90": 90
+    }
+
+    interval = interval_mapping.get(call.data)
+    if interval is None:
+        await call.answer("🚫 Неверный интервал.", show_alert=True)
+        return
+
+    user_id = call.from_user.id
+    config = await get_valid_config(user_id)
+    config["USERBOT"]["UPDATE_INTERVAL"] = interval
+    await save_config(config)
+
+    await call.answer()
+    await userbot_menu(call.message, user_id, edit=True)
+
+
 @wizard_router.callback_query(F.data == "userbot_confirm_delete")
 async def confirm_userbot_delete(call: CallbackQuery):
     """
@@ -148,7 +289,7 @@ async def cancel_userbot_delete(call: CallbackQuery):
     Отменяет процесс удаления userbot-сессии и возвращает в меню.
     """
     user_id = call.from_user.id
-    await call.answer("Отменено.")
+    await call.answer("Отменено.", show_alert=True)
     await userbot_menu(call.message, user_id, edit=True)
 
 
@@ -158,7 +299,7 @@ async def userbot_delete_handler(call: CallbackQuery):
     Удаляет данные userbot-сессии из конфигурации пользователя.
     """
     user_id = call.from_user.id
-    success = await delete_userbot_session(user_id)
+    success = await delete_userbot_session(call, user_id)
 
     if success:
         await call.message.answer("✅ Юзербот удалён.")
@@ -315,54 +456,114 @@ async def get_phone(message: Message, state: FSMContext):
         await userbot_menu(message, message.from_user.id, edit=False)
         await state.clear()
         return
-    await message.answer("📥 Введите полученный код:\n\n/cancel — отмена")
     await state.set_state(ConfigWizard.userbot_code)
+    await state.update_data(current_code="")
+    await message.answer(text=f"📥 Введите полученный код:\n\n🔢 Код:\n\n⬅️ — удалить цифру\n🆗 — подтвердить код\n\n/cancel — отмена", reply_markup=create_digit_keyboard())
 
 
-@wizard_router.message(ConfigWizard.userbot_code)
-async def get_code(message: Message, state: FSMContext):
+@wizard_router.callback_query(F.data.regexp(r"^code_\d$"), ConfigWizard.userbot_code)
+async def on_code_digit(call: CallbackQuery, state: FSMContext):
     """
-    Обрабатывает код подтверждения и при необходимости запрашивает пароль.
+    Обрабатывает добавление цифры в код подтверждения через инлайн-клавиатуру.
+    Обновляет состояние FSM и редактирует сообщение с клавиатурой.
     """
-    if await try_cancel(message, state):
+    digit = call.data.split('_')[1]
+    data = await state.get_data()
+    current_code = data.get("current_code", "") + digit
+    await state.update_data(current_code=current_code)
+    await call.answer()
+    await call.bot.edit_message_text(
+        f"📥 Введите полученный код:\n\n🔢 Код: <b>{current_code}</b>\n\n⬅️ — удалить цифру\n🆗 — подтвердить код\n\n/cancel — отмена",
+        chat_id=call.from_user.id,
+        message_id=call.message.message_id,
+        reply_markup=create_digit_keyboard()
+    )
+
+
+@wizard_router.callback_query(F.data == "code_delete", ConfigWizard.userbot_code)
+async def on_code_delete(call: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает удаление последней цифры из введённого кода подтверждения.
+    Обновляет состояние FSM и редактирует сообщение с клавиатурой.
+    """
+    data = await state.get_data()
+    current_code = data.get("current_code", "")[:-1]
+    await state.update_data(current_code=current_code)
+    await call.answer()
+    await call.bot.edit_message_text(
+        f"📥 Введите полученный код:\n\n🔢 Код: <b>{current_code}</b>\n\n⬅️ — удалить цифру\n🆗 — подтвердить код\n\n/cancel — отмена",
+        chat_id=call.from_user.id,
+        message_id=call.message.message_id,
+        reply_markup=create_digit_keyboard()
+    )
+
+
+@wizard_router.callback_query(F.data == "code_enter", ConfigWizard.userbot_code)
+async def on_code_enter(call: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает подтверждение кода через инлайн-клавиатуру.
+    Проверяет длину кода (4-6 символов) перед обработкой.
+    """
+    data = await state.get_data()
+    current_code = data.get("current_code", "")
+
+    if not (4 <= len(current_code) <= 6):
+        await call.answer("🚫 Код должен быть от 4 до 6 символов. Попробуйте ещё раз.", show_alert=True)
         return
     
-    if not message.text:
-        await message.answer("🚫 Поддерживается только текстовый ввод данных.\n\n/cancel — отмена")
-        return
-    
-    await state.update_data(code=message.text.strip())
-    success, need_password, retry = await continue_userbot_signin(message, state)
+    await call.bot.edit_message_text(
+        f"🔢 Введённый код: <b>{current_code}</b>",
+        chat_id=call.from_user.id,
+        message_id=call.message.message_id
+    )
+
+    await state.update_data(code=current_code)
+    success, need_password, retry = await continue_userbot_signin(call, state)
     if retry:
+        await state.set_state(ConfigWizard.userbot_code)
+        await state.update_data(current_code="")
+        await call.message.answer(text=f"📥 Введите полученный код:\n\n🔢 Код:\n\n⬅️ — удалить цифру\n🆗 — подтвердить код\n\n/cancel — отмена", reply_markup=create_digit_keyboard())
         return
     if not success:
-        await message.answer("🚫 Ошибка кода. Подключение юзербота прервано.")
-        await userbot_menu(message, message.from_user.id, edit=False)
+        await call.message.answer("🚫 Ошибка кода. Подключение юзербота прервано.")
+        await userbot_menu(call.message, call.from_user.id, edit=False)
         await state.clear()
+        await call.answer()
         return
     if need_password:
-        await message.answer("📥 Введите пароль:\n\n/cancel — отмена")
+        await call.message.answer("📥 Введите пароль:\n\n/cancel — отмена")
         await state.set_state(ConfigWizard.userbot_password)
     else:
-        user_id = message.from_user.id
-        username = message.from_user.username
-        bot_user = await message.bot.get_me()
+        user_id = call.from_user.id
+        username = call.from_user.username
+        bot_user = await call.bot.get_me()
         bot_username = bot_user.username
-        text_message = (
-            f"✅ <b>Юзербот успешно подключён.</b>\n"
+
+        config = await get_valid_config(user_id)
+        config_id = config["USERBOT"].get("CONFIG_ID")
+        device_model = DEVICE_MODELS[config_id]
+        system_version = SYSTEM_VERSIONS[config_id]
+        app_version = APP_VERSIONS[config_id]
+        text_success_message = (
+            f"✅ <b>Userbot-сессия успешно авторизована через Telegram-бота.</b>\n\n"
             f"┌🤖 <b>Бот:</b> @{bot_username}\n"
             f"├👤 <b>Пользователь:</b> @{username} (<code>{user_id}</code>)\n"
-            f"└🕒 <b>Время:</b> {now_str()} (UTC)"
+            f"├📱 <b>Модель устройства:</b> {device_model}\n"
+            f"├🖥️ <b>Версия системы:</b> {system_version}\n"
+            f"├📱 <b>Версия приложения:</b> {app_version}\n"
+            f"└🌎 <b>Страна прокси:</b> <code>Германия</code>"
         )
-        success_send_message = await userbot_send_self(user_id, text_message)
+
+        success_send_message = await userbot_send_self(user_id, text_success_message)
 
         if success_send_message:
-            await message.answer("✅ Юзербот успешно подключён.")
+            await call.message.answer("✅ Юзербот успешно подключён.")
         else:
-            await message.answer("✅ Юзербот успешно подключён.\n🚫 Ошибка при отправке подтверждения.")
+            await call.message.answer("✅ Юзербот успешно подключён.\n🚫 Ошибка при отправке подтверждения.")
 
-        await userbot_menu(message, message.from_user.id, edit=False)
+        await userbot_menu(call.message, call.from_user.id, edit=False)
         await state.clear()
+    await call.answer()
 
 
 @wizard_router.message(ConfigWizard.userbot_password)
@@ -386,13 +587,22 @@ async def get_password(message: Message, state: FSMContext):
         username = message.from_user.username
         bot_user = await message.bot.get_me()
         bot_username = bot_user.username
-        text_message = (
-            f"✅ <b>Юзербот успешно подключён.</b>\n"
+        config = await get_valid_config(user_id)
+        config_id = config["USERBOT"].get("CONFIG_ID")
+        device_model = DEVICE_MODELS[config_id]
+        system_version = SYSTEM_VERSIONS[config_id]
+        app_version = APP_VERSIONS[config_id]
+        text_success_message = (
+            f"✅ <b>Userbot-сессия успешно авторизована через Telegram-бота.</b>\n\n"
             f"┌🤖 <b>Бот:</b> @{bot_username}\n"
             f"├👤 <b>Пользователь:</b> @{username} (<code>{user_id}</code>)\n"
-            f"└🕒 <b>Время:</b> {now_str()} (UTC)"
+            f"├📱 <b>Модель устройства:</b> {device_model}\n"
+            f"├🖥️ <b>Версия системы:</b> {system_version}\n"
+            f"├📱 <b>Версия приложения:</b> {app_version}\n"
+            f"└🌎 <b>Страна прокси:</b> <code>Германия</code>"
         )
-        success_send_message = await userbot_send_self(user_id, text_message)
+
+        success_send_message = await userbot_send_self(user_id, text_success_message)
 
         if success_send_message:
             await message.answer("✅ Юзербот успешно подключён.")
@@ -423,7 +633,7 @@ async def userbot_main_menu_callback(call: CallbackQuery, state: FSMContext):
     )
 
 
-async def profiles_menu(message: Message, user_id: int):
+async def profiles_menu(message: Message, user_id: int) -> None:
     """
     Показывает пользователю главное меню управления профилями.
     Отображает список всех созданных профилей и предоставляет кнопки для их редактирования, удаления или добавления нового профиля.
@@ -475,13 +685,13 @@ async def profiles_menu(message: Message, user_id: int):
 async def on_profiles_menu(call: CallbackQuery):
     """
     Обрабатывает нажатие на кнопку "Профили" или переход к списку профилей.
-    Открывает меню со всеми профилями пользователя и возможностью их выбора для редактирования или удаления.
+    Открывает меню со всеми профилями пользователя и возможностью их редактирования или удаления.
     """
     await profiles_menu(call.message, call.from_user.id)
     await call.answer()
 
 
-def profile_text(profile, idx, user_id):
+def profile_text(profile: dict, idx: int, user_id: int) -> str:
     """
     Формирует текстовое описание параметров профиля по его данным.
     Включает цены, лимиты, supply, получателя и другую основную информацию по выбранному профилю.
@@ -499,7 +709,7 @@ def profile_text(profile, idx, user_id):
             f"└📤 <b>Отправитель</b>: {sender}")
 
 
-def profile_edit_keyboard(idx):
+def profile_edit_keyboard(idx: int) -> InlineKeyboardMarkup:
     """
     Создаёт инлайн-клавиатуру для быстрого редактирования параметров выбранного профиля.
     Каждая кнопка отвечает за редактирование отдельного поля (цены, supply, лимита и т.д.).
@@ -551,6 +761,10 @@ async def on_profile_edit(call: CallbackQuery, state: FSMContext):
 async def on_profile_name_entered(message: Message, state: FSMContext):
     """
     Обработка ввода нового имени профиля.
+
+    Аргументы:
+    - message: Объект сообщения, содержащий введённое имя.
+    - state: Контекст состояния FSM.
     """
     if await try_cancel(message, state):
         return
@@ -563,7 +777,7 @@ async def on_profile_name_entered(message: Message, state: FSMContext):
     if not is_valid_profile_name(name):
         await message.answer("🚫 Имя должно содержать только буквы (русские и латинские) и цифры, "
                              "и быть не длиннее 12 символов. Попробуйте ещё раз.\n\n"
-                             "/cancel — отменить")
+                             "/cancel — отмена")
         return
 
     data = await state.get_data()
@@ -604,7 +818,7 @@ async def edit_profile_min_price(call: CallbackQuery, state: FSMContext):
     profile_name = f'профиля {idx+1}' if  not profile['NAME'] else profile['NAME']
     await call.message.answer(f"✏️ <b>Редактирование {profile_name}:</b>\n\n"
                               "💰 Минимальная цена подарка, например: <code>5000</code>\n\n"
-                              "/cancel — отменить")
+                              "/cancel — отмена")
     await state.set_state(ConfigWizard.edit_min_price)
     await call.answer()
 
@@ -624,7 +838,7 @@ async def edit_profile_min_supply(call: CallbackQuery, state: FSMContext):
     profile_name = f'профиля {idx+1}' if  not profile['NAME'] else profile['NAME']
     await call.message.answer(f"✏️ <b>Редактирование {profile_name}:</b>\n\n"
                               "📦 Минимальный саплай подарка, например: <code>1000</code>\n\n"
-                              "/cancel — отменить")
+                              "/cancel — отмена")
     await state.set_state(ConfigWizard.edit_min_supply)
     await call.answer()
 
@@ -644,7 +858,7 @@ async def edit_profile_limit(call: CallbackQuery, state: FSMContext):
     profile_name = f'профиля {idx+1}' if  not profile['NAME'] else profile['NAME']
     await call.message.answer(f"✏️ <b>Редактирование {profile_name}:</b>\n\n"
                               "⭐️ Введите лимит звёзд для этого профиля (например: <code>10000</code>)\n\n"
-                              "/cancel — отменить")
+                              "/cancel — отмена")
     await state.set_state(ConfigWizard.edit_limit)
     await call.answer()
 
@@ -664,7 +878,7 @@ async def edit_profile_count(call: CallbackQuery, state: FSMContext):
     profile_name = f'профиля {idx+1}' if  not profile['NAME'] else profile['NAME']
     await call.message.answer(f"✏️ <b>Редактирование {profile_name}:</b>\n\n"
                               "🎁 Максимальное количество подарков, например: <code>5</code>\n\n"
-                              "/cancel — отменить")
+                              "/cancel — отмена")
     await state.set_state(ConfigWizard.edit_count)
     await call.answer()
 
@@ -688,11 +902,11 @@ async def edit_profile_target(call: CallbackQuery, state: FSMContext):
                     f"➤ <b>ID пользователя</b> (например ваш: <code>{call.from_user.id}</code>)\n"
                     "➤ <b>username канала</b> (например: <code>@pepeksey</code>)\n\n"
                     "👤 Если <b>отправитель</b> <code>Юзербот</code> введите:\n"
-                    "➤ <b>username</b> пользователя (например: <code>@leozizu</code>)\n"
-                    "➤ <b>username</b> канала (например: <code>@pepeksey</code>)\n\n"
+                    "➤ <b>username пользователя</b> (например: <code>@leozizu</code>)\n"
+                    "➤ <b>username канала</b> (например: <code>@pepeksey</code>)\n\n"
                     "🔎 <b>Узнать ID пользователя</b> можно тут: @userinfobot\n\n"
                     "⚠️ Чтобы аккаунт <code>Юзербота</code> отправил подарок на другой аккаунт, между аккаунтами должна быть переписка.\n\n"
-                    "/cancel — отменить")
+                    "/cancel — отмена")
     await call.message.answer(message_text)
     await state.set_state(ConfigWizard.edit_user_id)
     await call.answer()
@@ -704,15 +918,29 @@ async def edit_profile_name(call: CallbackQuery, state: FSMContext):
     Кнопка "Переименовать профиль". Сохраняет индекс и ждет новое имя.
     """
     idx = int(call.data.split("_")[-1])
+    config = await get_valid_config(call.from_user.id)
+    profiles = config.get("PROFILES", [])
+
+    if idx >= len(profiles):
+        await call.answer("Профиль не найден.", show_alert=True)
+        return
+    
+    profile = profiles[idx]
+
     await state.update_data(profile_index=idx)
-    await call.message.answer(f"✏️ Введите новое имя для профиля {idx + 1}: (до 12 символов)\n\n"
-                              "/cancel — отменить")
+    profile_name = f'профиля {idx+1}' if  not profile['NAME'] else profile['NAME']
+    await call.message.answer(f"✏️ Введите новое имя для профиля <b>{profile_name}</b>: (до 12 символов)\n\n"
+                              "/cancel — отмена")
     await state.set_state(ConfigWizard.edit_profile_name)
     await call.answer()
 
 
 @wizard_router.callback_query(lambda c: c.data.startswith("edit_profile_sender_"))
 async def edit_profile_sender(call: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает выбор отправителя подарков для профиля.
+    Переводит пользователя в состояние выбора отправителя.
+    """
     idx = int(call.data.removeprefix("edit_profile_sender_"))
     config = await get_valid_config(call.from_user.id)
     profiles = config.get("PROFILES", [])
@@ -733,7 +961,7 @@ async def edit_profile_sender(call: CallbackQuery, state: FSMContext):
                                  "🤖 <code>Бот</code> - покупки с баланса бота\n"
                                  "👤 <code>Юзербот</code> - покупки с баланса юзербота\n\n"
                                  "❗️ Если отправитель <code>Юзербот</code>, убедитесь, что он <b>включён</b> 🔔\n\n"
-                                 "/cancel — отменить",
+                                 "/cancel — отмена",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🤖 Бот", callback_data="choose_sender_bot"),
@@ -753,7 +981,7 @@ async def handle_gift_sender_input(message: Message, state: FSMContext):
         return
 
     await message.answer("❗ Пожалуйста, выберите отправителя с помощью кнопок.\n\n"
-                         "/cancel — отменить")
+                         "/cancel — отмена")
 
 
 @wizard_router.message(ConfigWizard.edit_gift_sender)
@@ -765,7 +993,7 @@ async def handle_gift_sender_input(message: Message, state: FSMContext):
         return
 
     await message.answer("❗ Пожалуйста, выберите отправителя с помощью кнопок.\n\n"
-                         "/cancel — отменить")
+                         "/cancel — отмена")
 
 
 @wizard_router.callback_query(lambda c: c.data.startswith("edit_profiles_menu_"))
@@ -811,7 +1039,7 @@ async def step_edit_min_price(message: Message, state: FSMContext):
         profile_name = f'профиля {idx+1}' if  not profile['NAME'] else profile['NAME']
         await message.answer(f"✏️ <b>Редактирование {profile_name}:</b>\n\n"
                              "💰 Максимальная цена подарка, например: <code>10000</code>\n\n"
-                             "/cancel — отменить")
+                             "/cancel — отмена")
         await state.set_state(ConfigWizard.edit_max_price)
     except ValueError:
         await message.answer("🚫 Введите положительное число. Попробуйте ещё раз.\n\n/cancel — отмена")
@@ -890,7 +1118,7 @@ async def step_edit_min_supply(message: Message, state: FSMContext):
         profile_name = f'профиля {idx+1}' if  not profile['NAME'] else profile['NAME']
         await message.answer(f"✏️ <b>Редактирование {profile_name}:</b>\n\n"
                              "📦 Максимальный саплай подарка, например: <code>10000</code>\n\n"
-                             "/cancel — отменить")
+                             "/cancel — отмена")
         await state.set_state(ConfigWizard.edit_max_supply)
     except ValueError:
         await message.answer("🚫 Введите положительное число. Попробуйте ещё раз.\n\n/cancel — отмена")
@@ -899,7 +1127,7 @@ async def step_edit_min_supply(message: Message, state: FSMContext):
 @wizard_router.message(ConfigWizard.edit_max_supply)
 async def step_edit_max_supply(message: Message, state: FSMContext):
     """
-    Обрабатывает ввод пользователем нового значения максимального supply для профиля.
+    Обрабатывает ввод пользователем нового значения максимального саплая для профиля.
     Проверяет валидность, сохраняет и возвращает пользователя в меню профиля.
     """
     if await try_cancel(message, state):
@@ -1090,7 +1318,7 @@ async def choose_sender_userbot(call: CallbackQuery, state: FSMContext):
     """
     await save_sender_and_finish(call, state, sender="userbot")
 
-async def save_sender_and_finish(call: CallbackQuery, state: FSMContext, sender: str):
+async def save_sender_and_finish(call: CallbackQuery, state: FSMContext, sender: str) -> None:
     """
     Сохраняет выбранного отправителя (бот или юзербот) в состояние FSM 
     и завершает процесс, возвращая пользователя в главное меню.
@@ -1134,7 +1362,7 @@ async def on_profile_add(call: CallbackQuery, state: FSMContext):
     await state.update_data(profile_index=None)
     await call.message.answer("➕ Добавление <b>нового профиля</b>.\n\n"
                               "💰 Минимальная цена подарка, например: <code>5000</code>\n\n"
-                              "/cancel — отменить", reply_markup=None)
+                              "/cancel — отмена", reply_markup=None)
     await state.set_state(ConfigWizard.min_price)
     await call.answer()
 
@@ -1195,7 +1423,7 @@ async def step_user_id(message: Message, state: FSMContext):
     await message.answer("📤 Выберите <b>отправителя</b> подарков:\n\n"
                          "🤖 <code>Бот</code> - покупки с баланса бота\n"
                          "👤 <code>Юзербот</code> - покупки с баланса юзербота\n\n"
-                         "/cancel — отменить",
+                         "/cancel — отмена",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🤖 Бот", callback_data="choose_sender_bot"),
@@ -1286,7 +1514,7 @@ async def on_profile_delete_cancel(call: CallbackQuery):
     await call.answer()
 
 
-async def safe_edit_text(message, text, reply_markup=None):
+async def safe_edit_text(message: Message, text: str, reply_markup: InlineKeyboardMarkup = None) -> bool:
     """
     Безопасно редактирует текст сообщения, игнорируя ошибки "нельзя редактировать" и "сообщение не найдено".
     """
@@ -1294,6 +1522,7 @@ async def safe_edit_text(message, text, reply_markup=None):
         await message.edit_text(text, reply_markup=reply_markup)
         return True
     except TelegramBadRequest as e:
+        logger.error(f"Ошибка редактирования сообщения: {e}")
         if "message can't be edited" in str(e) or "message to edit not found" in str(e):
             # Просто игнорируем — сообщение устарело или удалено
             return False
@@ -1306,7 +1535,7 @@ async def edit_config_handler(call: CallbackQuery, state: FSMContext):
     """
     Запуск мастера редактирования конфигурации.
     """
-    await call.message.answer("💰 Минимальная цена подарка, например: <code>5000</code>\n\n/cancel — отменить")
+    await call.message.answer("💰 Минимальная цена подарка, например: <code>5000</code>\n\n/cancel — отмена")
     await state.set_state(ConfigWizard.min_price)
     await call.answer()
 
@@ -1328,7 +1557,7 @@ async def step_min_price(message: Message, state: FSMContext):
         if value <= 0:
             raise ValueError
         await state.update_data(MIN_PRICE=value)
-        await message.answer("💰 Максимальная цена подарка, например: <code>10000</code>\n\n/cancel — отменить")
+        await message.answer("💰 Максимальная цена подарка, например: <code>10000</code>\n\n/cancel — отмена")
         await state.set_state(ConfigWizard.max_price)
     except ValueError:
         await message.answer("🚫 Введите положительное число. Попробуйте ещё раз.\n\n/cancel — отмена")
@@ -1358,7 +1587,7 @@ async def step_max_price(message: Message, state: FSMContext):
             return
 
         await state.update_data(MAX_PRICE=value)
-        await message.answer("📦 Минимальный саплай подарка, например: <code>1000</code>\n\n/cancel — отменить")
+        await message.answer("📦 Минимальный саплай подарка, например: <code>1000</code>\n\n/cancel — отмена")
         await state.set_state(ConfigWizard.min_supply)
     except ValueError:
         await message.answer("🚫 Введите положительное число. Попробуйте ещё раз.\n\n/cancel — отмена")
@@ -1381,7 +1610,7 @@ async def step_min_supply(message: Message, state: FSMContext):
         if value <= 0:
             raise ValueError
         await state.update_data(MIN_SUPPLY=value)
-        await message.answer("📦 Максимальный саплай подарка, например: <code>10000</code>\n\n/cancel — отменить")
+        await message.answer("📦 Максимальный саплай подарка, например: <code>10000</code>\n\n/cancel — отмена")
         await state.set_state(ConfigWizard.max_supply)
     except ValueError:
         await message.answer("🚫 Введите положительное число. Попробуйте ещё раз.\n\n/cancel — отмена")
@@ -1411,7 +1640,7 @@ async def step_max_supply(message: Message, state: FSMContext):
             return
 
         await state.update_data(MAX_SUPPLY=value)
-        await message.answer("🎁 Максимальное количество подарков, например: <code>5</code>\n\n/cancel — отменить")
+        await message.answer("🎁 Максимальное количество подарков, например: <code>5</code>\n\n/cancel — отмена")
         await state.set_state(ConfigWizard.count)
     except ValueError:
         await message.answer("🚫 Введите положительное число. Попробуйте ещё раз.\n\n/cancel — отмена")
@@ -1428,7 +1657,7 @@ async def step_count(message: Message, state: FSMContext):
     if not message.text:
         await message.answer("🚫 Поддерживается только текстовый ввод данных.\n\n/cancel — отмена")
         return
-
+    
     try:
         value = int(message.text)
         if value <= 0:
@@ -1436,7 +1665,7 @@ async def step_count(message: Message, state: FSMContext):
         await state.update_data(COUNT=value)
         await message.answer(
             "⭐️ Введите лимит звёзд для этого профиля (например: <code>10000</code>)\n\n"
-            "/cancel — отменить"
+            "/cancel — отмена"
         )
         await state.set_state(ConfigWizard.limit)
     except ValueError:
@@ -1465,11 +1694,11 @@ async def step_limit(message: Message, state: FSMContext):
                         f"➤ <b>ID пользователя</b> (например ваш: <code>{message.from_user.id}</code>)\n"
                         "➤ <b>username канала</b> (например: <code>@pepeksey</code>)\n\n"
                         "👤 Если <b>отправитель</b> <code>Юзербот</code> введите:\n"
-                        "➤ <b>username</b> пользователя (например: <code>@leozizu</code>)\n"
-                        "➤ <b>username</b> канала (например: <code>@pepeksey</code>)\n\n"
+                        "➤ <b>username пользователя</b> (например: <code>@leozizu</code>)\n"
+                        "➤ <b>username канала</b> (например: <code>@pepeksey</code>)\n\n"
                         "🔎 <b>Узнать ID пользователя</b> можно тут: @userinfobot\n\n"
                         "⚠️ Чтобы аккаунт <code>Юзербота</code> отправил подарок на другой аккаунт, между аккаунтами должна быть переписка.\n\n"
-                        "/cancel — отменить")
+                        "/cancel — отмена")
         await message.answer(message_text)
         await state.set_state(ConfigWizard.user_id)
     except ValueError:
@@ -1481,15 +1710,79 @@ async def deposit_menu(call: CallbackQuery, state: FSMContext):
     """
     Переход к шагу пополнения баланса.
     """
-    await call.message.answer("💰 Введите сумму для пополнения, например: <code>5000</code>\n\n/cancel — отменить")
+    config = await get_valid_config(call.from_user.id)
+    deposit_enabled = config.get("DEPOSIT_ENBALE", False)
+    deposit_text = "🔋 Пополнение с других аккаунтов <b>разрешено</b>." if deposit_enabled else "🪫 Пополнение с других аккаунтов <b>запрещено</b>."
+    button_text = "🪫 Запретить пополнение другим" if deposit_enabled else "🔋 Разрешить пополнение другим"
+    button_callback = "deposit_disable" if deposit_enabled else "deposit_enable"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=button_text, callback_data=button_callback)],
+        ]
+    )
+    await call.message.answer(
+        "💰 Введите сумму для пополнения, например: <code>5000</code>\n\n"
+        f"{deposit_text}\n\n"
+        "/cancel — отмена",
+        reply_markup=keyboard
+    )
     await state.set_state(ConfigWizard.deposit_amount)
+    await call.answer()
+
+
+@wizard_router.callback_query(F.data == "deposit_enable")
+async def deposit_enable_handler(call: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки "Разрешить пополнение другим" в меню пополнения баланса.
+    Включает возможность пополнения баланса с других аккаунтов для пользователя.
+    Обновляет конфиг пользователя, сохраняет изменения и обновляет интерфейс с новым статусом.
+    """
+    config = await get_valid_config(call.from_user.id)
+    config["DEPOSIT_ENBALE"] = True
+    deposit_text = "🔋 Пополнение с других аккаунтов <b>разрешено</b>."
+    await save_config(config)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🪫 Запретить пополнение другим", callback_data="deposit_disable")],
+        ]
+    )
+    await call.message.edit_text(
+        "💰 Введите сумму для пополнения, например: <code>5000</code>\n\n"
+        f"{deposit_text}\n\n"
+        "/cancel — отмена",
+        reply_markup=keyboard)
+    await call.answer()
+
+@wizard_router.callback_query(F.data == "deposit_disable")
+async def deposit_disable_handler(call: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки "Запретить пополнение другим" в меню пополнения баланса.
+    Отключает возможность пополнения баланса с других аккаунтов для пользователя.
+    Обновляет конфиг пользователя, сохраняет изменения и обновляет интерфейс с новым статусом.
+    """
+    config = await get_valid_config(call.from_user.id)
+    config["DEPOSIT_ENBALE"] = False
+    deposit_text = "🪫 Пополнение с других аккаунтов <b>запрещено</b>."
+    await save_config(config)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔋 Разрешить пополнение другим", callback_data="deposit_enable")],
+        ]
+    )
+    await call.message.edit_text(
+        "💰 Введите сумму для пополнения, например: <code>5000</code>\n\n"
+        f"{deposit_text}\n\n"
+        "/cancel — отмена",
+        reply_markup=keyboard)
     await call.answer()
 
 
 @wizard_router.message(ConfigWizard.deposit_amount)
 async def deposit_amount_input(message: Message, state: FSMContext):
     """
-    Обработка суммы для пополнения и отправка счёта на оплату.
+    Обрабатывает ввод пользователем суммы для пополнения баланса.
+    Проверяет корректность введённой суммы, формирует и отправляет счёт на оплату через Telegram Payments.
+    После успешного ввода очищает состояние FSM.
     """
     if await try_cancel(message, state):
         return
@@ -1500,14 +1793,14 @@ async def deposit_amount_input(message: Message, state: FSMContext):
 
     try:
         amount = int(message.text)
-        if amount < 1 or amount > 10000:
+        if amount < 1 or amount > 50000:
             raise ValueError
         prices = [LabeledPrice(label=CURRENCY, amount=amount)]
         await message.answer_invoice(
             title="Бот для подарков",
             description="Пополнение баланса",
             prices=prices,
-            provider_token="",  # Укажи свой токен
+            provider_token="",
             payload="stars_deposit",
             currency=CURRENCY,
             start_parameter="deposit",
@@ -1515,13 +1808,14 @@ async def deposit_amount_input(message: Message, state: FSMContext):
         )
         await state.clear()
     except ValueError:
-        await message.answer("🚫 Введите число от 1 до 10000. Попробуйте ещё раз.\n\n/cancel — отмена")
+        await message.answer("🚫 Введите число от 1 до 50000. Попробуйте ещё раз.\n\n/cancel — отмена")
 
 
 @wizard_router.callback_query(F.data == "refund_menu")
 async def refund_menu(call: CallbackQuery, state: FSMContext):
     """
-    Переход к возврату звёзд (по ID транзакции).
+    Обработчик перехода к меню возврата звёзд по ID транзакции.
+    Показывает пользователю инструкции по возврату, дополнительные команды и переводит FSM в соответствующее состояние.
     """
     await call.message.answer("↩️ <b>Вывод звёзд с</b> <code>Бота</code>.\n\n"
                               "📤 Отправьте в следующем сообщении <b>ID транзакции</b>.\n\n"
@@ -1529,7 +1823,7 @@ async def refund_menu(call: CallbackQuery, state: FSMContext):
                               "/withdraw_all — вывести весь баланс.\n\n"
                               "/refund + <code>[user_id]</code> + <code>[transaction_id]</code> — вернуть звёзды конкретному пользователю по <b>id транзакции</b>. Например: <code>/refund 12345678 abCdEF1g23hkL</code>\n\n"
                               "🚫 Вывести звёзды с <code>Юзербота</code> нельзя.\n\n"
-                              "/cancel — отменить")
+                              "/cancel — отмена")
     await state.set_state(ConfigWizard.refund_id)
     await call.answer()
 
@@ -1537,7 +1831,9 @@ async def refund_menu(call: CallbackQuery, state: FSMContext):
 @wizard_router.message(ConfigWizard.refund_id)
 async def refund_input(message: Message, state: FSMContext):
     """
-    Обработка возврата по ID транзакции. Также поддерживается команда /withdraw_all.
+    Обрабатывает ввод пользователем ID транзакции для возврата звёзд.
+    Поддерживает команды /withdraw_all (вывод всего баланса) и /refund (возврат по конкретному пользователю и транзакции).
+    Проверяет корректность данных, выполняет возврат и обновляет меню пользователя.
     """
     if not message.text:
         await message.answer("🚫 Поддерживается только текстовый ввод данных.\n\n/cancel — отмена")
@@ -1548,7 +1844,7 @@ async def refund_input(message: Message, state: FSMContext):
         await withdraw_all_handler(message)
         return
     
-    if message.text and message.text.strip().lower() == "/refund":
+    if message.text and "/refund" in message.text.strip().lower():
         await state.clear()
         await refund_handler(message)
         return
@@ -1573,8 +1869,14 @@ async def refund_input(message: Message, state: FSMContext):
 @wizard_router.callback_query(F.data == "guest_deposit_menu")
 async def guest_deposit_menu(call: CallbackQuery, state: FSMContext):
     """
-    Переход к шагу пополнения баланса для гостей.
+    Обработчик перехода к шагу пополнения баланса для гостевых пользователей.
+    Проверяет разрешение на пополнение для гостей, показывает форму ввода суммы и переводит FSM в соответствующее состояние.
     """
+    if not await get_deposit_enabled():
+        await call.message.answer("🚫 Пополнение баланса для гостей на данный момент запрещено администратором бота.")
+        await call.answer()
+        return
+
     await call.message.answer("💰 Введите сумму для пополнения, например: <code>5000</code>")
     await state.set_state(ConfigWizard.guest_deposit_amount)
     await call.answer()
@@ -1583,25 +1885,25 @@ async def guest_deposit_menu(call: CallbackQuery, state: FSMContext):
 @wizard_router.message(ConfigWizard.guest_deposit_amount)
 async def guest_deposit_amount_input(message: Message, state: FSMContext):
     """
-    Обработка суммы для пополнения и отправка счёта на оплату для гостей.
+    Обрабатывает ввод суммы для пополнения баланса гостем.
+    Проверяет корректность суммы, формирует и отправляет счёт на оплату через Telegram Payments.
+    В случае ошибки показывает гостевое меню и сообщение об ошибке.
     """
-    if await try_cancel(message, state):
-        return
-    
     if not message.text:
+        await show_guest_menu(message)
         await message.answer("🚫 Поддерживается только текстовый ввод данных.\n\n⚠️ Операция завершена, попробуйте заново.")
         return
 
     try:
         amount = int(message.text)
-        if amount < 1 or amount > 10000:
+        if amount < 1 or amount > 50000:
             raise ValueError
         prices = [LabeledPrice(label=CURRENCY, amount=amount)]
         await message.answer_invoice(
             title="Бот для подарков",
             description="Пополнение баланса",
             prices=prices,
-            provider_token="",  # Укажи свой токен
+            provider_token="",
             payload="stars_deposit",
             currency=CURRENCY,
             start_parameter="deposit",
@@ -1610,18 +1912,21 @@ async def guest_deposit_amount_input(message: Message, state: FSMContext):
         await state.clear()
     except ValueError:
         await state.clear()
-        await message.answer("🚫 Ожидается число от 1 до 10000.\n\n⚠️ Операция завершена, попробуйте заново.")
+        await show_guest_menu(message)
+        await message.answer("🚫 Ожидается число от 1 до 50000.\n\n⚠️ Операция завершена, попробуйте заново.")
         
 
 @wizard_router.message(Command("withdraw_all"))
 async def withdraw_all_handler(message: Message):
     """
-    Запрос подтверждения на вывод всех звёзд с баланса.
+    Обрабатывает команду /withdraw_all для вывода всех звёзд с баланса пользователя.
+    Проверяет права пользователя, баланс, формирует клавиатуру подтверждения и отправляет пользователю запрос на подтверждение действия.
     """
-    if message.from_user.id not in ALLOWED_USER_IDS:
-            await show_guest_menu(message)
-            return
-    
+    allowed_user_ids = get_allowed_users()
+    if message.from_user.id not in allowed_user_ids:
+        await show_guest_menu(message)
+        return
+
     balance = await refresh_balance(message.bot)
     if balance == 0:
         await message.answer("⚠️ Не найдено звёзд для возврата.")
@@ -1643,14 +1948,22 @@ async def withdraw_all_handler(message: Message):
 
 
 @wizard_router.callback_query(lambda c: c.data == "withdraw_all_confirm")
-async def withdraw_all_confirmed(call: CallbackQuery):
+async def withdraw_all_confirmed(call: CallbackQuery) -> None:
     """
-    Подтверждение и запуск процедуры возврата всех звёзд. Выводит отчёт пользователю.
+    Обработчик подтверждения возврата всех звёзд.
+    Запускает процедуру возврата, отправляет промежуточные статусы, формирует итоговый отчёт о возврате и обновляет меню пользователя.
     """
-    await call.message.edit_text("⏳ Выполняется вывод звёзд...")  # можно тут добавить вывод/отчёт
+    await call.message.edit_text("⏳ Выполняется вывод звёзд...")
 
-    async def send_status(msg):
-        await call.message.answer(msg)
+    async def send_status(msg: str) -> None:
+        """
+        Отправляет сообщение статуса пользователю при возврате звёзд.
+        Логирует ошибки отправки.
+        """
+        try:
+            await call.message.answer(msg)
+        except Exception as e:
+            logger.error(f"Ошибка при отправке статуса: {e}")
 
     await call.answer()
 
@@ -1679,9 +1992,10 @@ async def withdraw_all_confirmed(call: CallbackQuery):
 
 
 @wizard_router.callback_query(lambda c: c.data == "withdraw_all_cancel")
-async def withdraw_all_cancel(call: CallbackQuery):
+async def withdraw_all_cancel(call: CallbackQuery) -> None:
     """
-    Обработка отмены возврата всех звёзд.
+    Обработчик отмены процедуры возврата всех звёзд.
+    Обновляет сообщение, завершает действие и возвращает пользователя к основному меню.
     """
     await call.message.edit_text("🚫 Действие отменено.")
     await call.answer()
@@ -1689,11 +2003,14 @@ async def withdraw_all_cancel(call: CallbackQuery):
 
 
 @wizard_router.message(Command("refund"))
-async def refund_handler(message: Message):
+async def refund_handler(message: Message) -> None:
     """
-    Обрабатывает команду /refund.
+    Обрабатывает команду /refund для возврата звёзд по конкретной транзакции и пользователю.
+    Проверяет права пользователя, корректность формата команды, выполняет возврат и обновляет меню пользователя.
+    В случае ошибки выводит подробное сообщение.
     """
-    if message.from_user.id not in ALLOWED_USER_IDS:
+    allowed_user_ids = get_allowed_users()
+    if message.from_user.id not in allowed_user_ids:
         await show_guest_menu(message)
         return
     
@@ -1737,7 +2054,9 @@ async def refund_handler(message: Message):
 
 async def try_cancel(message: Message, state: FSMContext) -> bool:
     """
-    Проверка, ввёл ли пользователь /cancel, и отмена мастера, если да.
+    Проверяет, ввёл ли пользователь команду /cancel для отмены текущего шага мастера.
+    Если команда введена, очищает состояние FSM, отправляет сообщение об отмене и обновляет главное меню пользователя.
+    Возвращает True, если отмена была выполнена, иначе False.
     """
     if message.text and message.text.strip().lower() == "/cancel":
         await state.clear()
@@ -1747,9 +2066,11 @@ async def try_cancel(message: Message, state: FSMContext) -> bool:
     return False
 
 
-async def get_chat_type(bot: Bot, username: str):
+async def get_chat_type(bot: Bot, username: str) -> str:
     """
-    Определяет тип Telegram-объекта по username для каналов.
+    Определяет тип Telegram-объекта (user, bot, channel, group) по username.
+    Используется для проверки корректности получателя подарка при настройке профиля.
+    В случае ошибки возвращает "unknown" и логирует причину.
     """
     if not username.startswith("@"):
         username = "@" + username
@@ -1765,7 +2086,7 @@ async def get_chat_type(bot: Bot, username: str):
         elif chat.type in ("group", "supergroup"):
             return "group"
         else:
-            return chat.type  # на всякий случай
+            return chat.type
     except TelegramAPIError as e:
         logger.error(f"TelegramAPIError при получении юзернейма канала: {e}")
         return "unknown"
@@ -1774,8 +2095,9 @@ async def get_chat_type(bot: Bot, username: str):
         return "unknown"
     
 
-def register_wizard_handlers(dp):
+def register_wizard_handlers(dp: Dispatcher) -> None:
     """
-    Регистрация wizard_router в диспетчере (Dispatcher).
+    Регистрирует маршрутизатор wizard_router в диспетчере событий Telegram-бота.
+    Позволяет использовать все обработчики мастера профилей и связанных функций.
     """
     dp.include_router(wizard_router)

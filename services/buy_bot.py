@@ -1,9 +1,22 @@
+"""
+Модуль покупки подарков через Telegram Bot API.
+
+Этот модуль содержит функции для:
+- Покупки подарков с заданными параметрами.
+- Обработки ошибок и повторных попыток при покупке.
+- Тестирования покупки подарков в режиме разработки.
+
+Основные функции:
+- buy_gift: Покупает подарок с заданными параметрами и количеством попыток.
+"""
+
 # --- Стандартные библиотеки ---
 import asyncio
 import logging
 import random
 
 # --- Сторонние библиотеки ---
+from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
 
 # --- Внутренние модули ---
@@ -13,16 +26,16 @@ from services.balance import change_balance
 logger = logging.getLogger(__name__)
 
 async def buy_gift(
-    bot,
-    env_user_id,
-    gift_id,
-    user_id,
-    chat_id,
-    gift_price,
-    file_id,
-    retries=3,
-    add_test_purchases=False
-):
+    bot: Bot,
+    env_user_id: int,
+    gift_id: str,
+    target_user_id: int | None,
+    target_chat_id: str | None,
+    gift_price: int,
+    file_id: str | None,
+    retries: int = 3,
+    add_test_purchases: bool = False
+) -> bool:
     """
     Покупает подарок с заданными параметрами и количеством попыток.
     
@@ -59,10 +72,10 @@ async def buy_gift(
     
     for attempt in range(1, retries + 1):
         try:
-            if user_id is not None and chat_id is None:
-                result = await bot.send_gift(gift_id=gift_id, user_id=user_id)
-            elif user_id is None and chat_id is not None:
-                result = await bot.send_gift(gift_id=gift_id, chat_id=chat_id)
+            if target_user_id is not None and target_chat_id is None:
+                result = await bot.send_gift(gift_id=gift_id, user_id=target_user_id)
+            elif target_user_id is None and target_chat_id is not None:
+                result = await bot.send_gift(gift_id=gift_id, chat_id=target_chat_id)
             else:
                 logger.warning("Указаны оба параметра — user_id и chat_id. Прерываем.")
                 break

@@ -1,3 +1,25 @@
+"""
+Модуль хендлеров для каталога подарков.
+
+Этот модуль содержит функции для:
+- Управления состояниями FSM каталога подарков.
+- Формирования клавиатуры для каталога подарков.
+- Обработки выбора подарков, количества, получателя и отправителя.
+- Подтверждения и выполнения покупки подарков.
+- Отмены действий и возврата в главное меню.
+
+Основные функции:
+- catalog: Открывает каталог подарков.
+- on_gift_selected: Обрабатывает выбор подарка.
+- on_quantity_entered: Обрабатывает ввод количества.
+- on_recipient_entered: Обрабатывает ввод получателя.
+- on_catalog_sender_selected: Обрабатывает выбор отправителя.
+- confirm_purchase: Подтверждает и выполняет покупку.
+- cancel_callback: Отменяет покупку.
+- try_cancel: Универсальная функция для обработки отмены.
+- safe_edit_text: Безопасно редактирует текст сообщения.
+"""
+
 # --- Стандартные библиотеки ---
 import asyncio
 
@@ -11,12 +33,12 @@ from aiogram.exceptions import TelegramBadRequest
 # --- Внутренние модули ---
 from services.config import get_target_display_local, PURCHASE_COOLDOWN
 from services.menu import update_menu
-from services.gifts_bot import get_filtered_gifts
+from services.gifts_manager import get_best_gift_list
 from services.buy_bot import buy_gift
 from services.buy_userbot import buy_gift_userbot
 from services.balance import refresh_balance
 
-wizard_router = Router()
+wizard_router = Router() # Роутер для FSM каталога
 
 class CatalogFSM(StatesGroup):
     """
@@ -29,14 +51,14 @@ class CatalogFSM(StatesGroup):
     waiting_confirm = State()
 
 
-def gifts_catalog_keyboard(gifts):
+def gifts_catalog_keyboard(gifts: list[dict]) -> InlineKeyboardMarkup:
     """
     Формирует клавиатуру для каталога подарков. 
     Каждый подарок — отдельная кнопка, плюс кнопка возврата в меню.
     """
     keyboard = []
     for gift in gifts:
-        if gift['supply'] == None:
+        if gift['supply'] == 0:
             btn = InlineKeyboardButton(
                 text=f"{gift['emoji']} — ★{gift['price']:,}",
                 callback_data=f"catalog_gift_{gift['id']}"
@@ -60,24 +82,27 @@ def gifts_catalog_keyboard(gifts):
 
 
 @wizard_router.callback_query(F.data == "catalog")
-async def catalog(call: CallbackQuery, state: FSMContext):
+async def catalog(call: CallbackQuery, state: FSMContext) -> None:
     """
     Обработка открытия каталога. Получает список подарков и формирует сообщение с клавиатурой.
     """
-    gifts = await get_filtered_gifts(
+    gifts = await get_best_gift_list(
+        user_id=call.from_user.id,
         bot=call.bot,
-        min_price=0,
-        max_price=1000000,
-        min_supply=0,
-        max_supply=100000000,
-        unlimited = True
+        profile={
+            "MIN_PRICE": 0, 
+            "MAX_PRICE": 1000000,
+            "MIN_SUPPLY": 0,
+            "MAX_SUPPLY": 100000000,
+            "UNLIMITED": True
+        }
     )
 
     # Сохраняем текущий каталог в FSM — нужен для последующих шагов
     await state.update_data(gifts_catalog=gifts)
 
-    gifts_limited = [g for g in gifts if g['supply'] != None]
-    gifts_unlimited = [g for g in gifts if g['supply'] == None]
+    gifts_limited = [g for g in gifts if g['supply'] > 0]
+    gifts_unlimited = [g for g in gifts if g['supply'] == 0]
 
     await call.message.answer(
         f"🧸 Обычных подарков: <b>{len(gifts_unlimited)}</b>\n"
@@ -89,7 +114,7 @@ async def catalog(call: CallbackQuery, state: FSMContext):
 
 
 @wizard_router.callback_query(F.data == "catalog_main_menu")
-async def start_callback(call: CallbackQuery, state: FSMContext):
+async def start_callback(call: CallbackQuery, state: FSMContext) -> None:
     """
     Показывает главное меню по нажатию кнопки "Меню".
     Очищает все состояния FSM для пользователя.
@@ -107,7 +132,7 @@ async def start_callback(call: CallbackQuery, state: FSMContext):
 
 
 @wizard_router.callback_query(F.data.startswith("catalog_gift_"))
-async def on_gift_selected(call: CallbackQuery, state: FSMContext):
+async def on_gift_selected(call: CallbackQuery, state: FSMContext) -> None:
     """
     Хендлер выбора подарка из каталога. Запрашивает у пользователя количество для покупки.
     """
@@ -120,13 +145,13 @@ async def on_gift_selected(call: CallbackQuery, state: FSMContext):
         return
     gift = next((g for g in gifts if str(g['id']) == gift_id), None)
 
-    gift_display = f"{gift['left']:,} из {gift['supply']:,}" if gift.get("supply") != None else gift.get("emoji")
+    gift_display = f"{gift['left']:,} из {gift['supply']:,}" if gift.get("supply") != 0 else gift.get("emoji")
 
     await state.update_data(selected_gift=gift)
     await call.message.edit_text(
         f"🎯 Вы выбрали: <b>{gift_display}</b> за ★{gift['price']}\n"
         f"🎁 Введите <b>количество</b> для покупки:\n\n"
-        f"/cancel - для отмены",
+        f"/cancel — отмена",
         reply_markup=None
     )
     await state.set_state(CatalogFSM.waiting_quantity)
@@ -134,7 +159,7 @@ async def on_gift_selected(call: CallbackQuery, state: FSMContext):
 
 
 @wizard_router.message(CatalogFSM.waiting_quantity)
-async def on_quantity_entered(message: Message, state: FSMContext):
+async def on_quantity_entered(message: Message, state: FSMContext) -> None:
     """
     Хендлер обработки ввода количества для покупки выбранного подарка.
     Теперь переходим к шагу ввода получателя.
@@ -165,13 +190,13 @@ async def on_quantity_entered(message: Message, state: FSMContext):
                     "➤ <b>username</b> канала (например: <code>@pepeksey</code>)\n\n"
                     "🔎 <b>Узнать ID пользователя</b> можно тут: @userinfobot\n"
                     "⚠️ Чтобы аккаунт <code>Юзербота</code> отправил подарок на другой аккаунт, между аккаунтами должна быть переписка.\n\n"
-                    "/cancel — отменить")
+                    "/cancel — отмена")
     await message.answer(message_text)
     await state.set_state(CatalogFSM.waiting_recipient)
 
 
 @wizard_router.message(CatalogFSM.waiting_recipient)
-async def on_recipient_entered(message: Message, state: FSMContext):
+async def on_recipient_entered(message: Message, state: FSMContext) -> None:
     """
     Обрабатывает ввод получателя — ID или username.
     """
@@ -212,13 +237,13 @@ async def on_recipient_entered(message: Message, state: FSMContext):
     message_text = ("📤 Выберите <b>отправителя</b> подарков:\n\n"
                     "🤖 <code>Бот</code> - покупки с баланса бота\n"
                     "👤 <code>Юзербот</code> - покупки с баланса юзербота\n\n"
-                    "/cancel — отменить")
+                    "/cancel — отмена")
     await message.answer(message_text, reply_markup=kb)
     await state.set_state(CatalogFSM.waiting_sender)
 
 
 @wizard_router.callback_query(F.data.startswith("catalog_sender_"))
-async def on_catalog_sender_selected(call: CallbackQuery, state: FSMContext):
+async def on_catalog_sender_selected(call: CallbackQuery, state: FSMContext) -> None:
     """
     Обрабатывает выбор отправителя (бот или юзербот).
     """
@@ -234,7 +259,7 @@ async def on_catalog_sender_selected(call: CallbackQuery, state: FSMContext):
     target_user_id = data.get("target_user_id")
     target_chat_id = data.get("target_chat_id")
 
-    gift_display = f"{gift['left']:,} из {gift['supply']:,}" if gift.get("supply") is not None else gift.get("emoji")
+    gift_display = f"{gift['left']:,} из {gift['supply']:,}" if gift.get("supply") != 0 else gift.get("emoji")
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -261,7 +286,7 @@ async def on_catalog_sender_selected(call: CallbackQuery, state: FSMContext):
 
 
 @wizard_router.callback_query(F.data == "confirm_purchase")
-async def confirm_purchase(call: CallbackQuery, state: FSMContext):
+async def confirm_purchase(call: CallbackQuery, state: FSMContext) -> None:
     """
     Подтверждение и запуск покупки выбранного подарка в заданном количестве для выбранного получателя.
     """
@@ -278,7 +303,7 @@ async def confirm_purchase(call: CallbackQuery, state: FSMContext):
     qty = data["selected_qty"]
     data_target_user_id=data.get("target_user_id")
     data_target_chat_id=data.get("target_chat_id")
-    gift_display = f"{gift['left']:,} из {gift['supply']:,}" if gift.get("supply") != None else gift.get("emoji")
+    gift_display = f"{gift['left']:,} из {gift['supply']:,}" if gift.get("supply") != 0 else gift.get("emoji")
 
     bought = 0
     while bought < qty:
@@ -287,8 +312,8 @@ async def confirm_purchase(call: CallbackQuery, state: FSMContext):
                 bot=call.bot,
                 env_user_id=call.from_user.id,
                 gift_id=gift_id,
-                user_id=data_target_user_id,
-                chat_id=data_target_chat_id,
+                target_user_id=data_target_user_id,
+                target_chat_id=data_target_chat_id,
                 gift_price=gift_price,
                 file_id=None
             )
@@ -318,8 +343,9 @@ async def confirm_purchase(call: CallbackQuery, state: FSMContext):
         await call.message.answer(f"⚠️ Покупка <b>{gift_display}</b> остановлена.\n"
                                   f"🎁 Куплено подарков: <b>{bought}</b> из <b>{qty}</b>\n"
                                   f"👤 Получатель: {get_target_display_local(data_target_user_id, data_target_chat_id, call.from_user.id)}\n"
-                                  f"💰 Пополните баланс! Проверьте адрес получателя!\n"
-                                  f"📦 Проверьте доступность подарка!\n"
+                                  "💰 Пополните баланс! Проверьте адрес получателя!\n"
+                                  "📦 Проверьте доступность подарка!\n"
+                                  "🪜 Проверьте типы принимаемых подарков у получателя!\n"
                                   f"🚦 Статус изменён на 🔴 (неактивен).")
     
     await state.clear()
@@ -328,7 +354,7 @@ async def confirm_purchase(call: CallbackQuery, state: FSMContext):
 
 
 @wizard_router.callback_query(lambda c: c.data == "cancel_purchase")
-async def cancel_callback(call: CallbackQuery, state: FSMContext):
+async def cancel_callback(call: CallbackQuery, state: FSMContext) -> None:
     """
     Отмена покупки подарка на этапе подтверждения.
     """
@@ -351,7 +377,7 @@ async def try_cancel(message: Message, state: FSMContext) -> bool:
     return False
 
 
-async def safe_edit_text(message, text, reply_markup=None):
+async def safe_edit_text(message: Message, text: str, reply_markup: InlineKeyboardMarkup = None) -> bool:
     """
     Безопасно редактирует текст сообщения, игнорируя ошибки "нельзя редактировать" и "сообщение не найдено".
     """
@@ -366,7 +392,7 @@ async def safe_edit_text(message, text, reply_markup=None):
             raise
 
 
-def register_catalog_handlers(dp):
+def register_catalog_handlers(dp) -> None:
     """
     Регистрирует все хендлеры, связанные с каталогом подарков.
     """

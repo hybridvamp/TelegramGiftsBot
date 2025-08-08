@@ -1,29 +1,64 @@
+"""
+Модуль управления подарками.
+
+Этот модуль содержит функции для работы с подарками, включая:
+- Обновление кеша подарков от userbot.
+- Проверку актуальности кеша userbot.
+- Фильтрацию подарков по параметрам профиля.
+- Получение списка подарков из различных источников (Redis, bot, userbot).
+
+Основные функции:
+- userbot_gifts_updater: Фоновая задача для обновления кеша подарков от userbot.
+- is_userbot_cache_fresh: Проверяет, актуален ли кеш userbot.
+- filter_gifts_by_profile: Фильтрует список подарков по параметрам профиля.
+- get_best_gift_list: Возвращает наиболее полный список подарков из доступных источников.
+"""
+
 # --- Стандартные библиотеки ---
 import time
 import random
 import asyncio
 import logging
 
+# --- Сторонние библиотеки ---
+from aiogram import Bot
+
 # --- Внутренние модули ---
-from services.config import USERBOT_UPDATE_COOLDOWN
-from services.gifts_bot import get_filtered_gifts
+from services.config import get_valid_config, get_use_redis, MORE_LOGS
+from services.gifts_bot import get_bot_filtered_gifts
 from services.gifts_userbot import get_userbot_filtered_gifts
+from services.gifts_redis import get_redis_filtered_gifts, is_redis_active
+
 
 logger = logging.getLogger(__name__)
 
-userbot_all_gifts: list[dict] = []
-last_update_userbot: float = 0
+userbot_all_gifts: list[dict] = [] # Глобальный список подарков от userbot
+last_update_userbot: float = 0 # Время последнего обновления кеша userbot
 
-async def userbot_gifts_updater(user_id: int, base_interval: int = USERBOT_UPDATE_COOLDOWN):
+async def userbot_gifts_updater(user_id: int, base_interval: int = 45) -> None:
     """
     Запускает фоновую задачу для регулярного обновления кеша подарков от юзербота.
 
     :param user_id: Telegram ID владельца userbot-сессии
     :param base_interval: Минимальный интервал обновления (в секундах); 
                           фактическая пауза будет от base_interval до base_interval + 10
+    :return: None
     """
     global userbot_all_gifts, last_update_userbot
+    
     while True:
+        config = await get_valid_config(user_id)
+        userbot_config = config.get("USERBOT", {})
+        base_interval = userbot_config["UPDATE_INTERVAL"]
+        use_redis = get_use_redis()
+
+        # Проверяем, если Redis активен и справляется с задачей обновления списка подарков
+        if use_redis:
+            _, state_redis = await is_redis_active()
+            if state_redis:
+                delay = random.randint(base_interval, base_interval + 10)
+                await asyncio.sleep(delay)
+                continue  # Если Redis активен, не запрашиваем userbot
         try:
             userbot_all_gifts = await get_userbot_filtered_gifts(
                 user_id,
@@ -36,11 +71,14 @@ async def userbot_gifts_updater(user_id: int, base_interval: int = USERBOT_UPDAT
             last_update_userbot = time.time()
         except Exception as e:
             logger.error(f"Ошибка в userbot_gifts_updater: {e}")
+            
         delay = random.randint(base_interval, base_interval + 10)
+        if MORE_LOGS:
+            logger.info(f"Обновление подарков от userbot через {delay} секунд...")
         await asyncio.sleep(delay)
 
 
-def is_userbot_cache_fresh(max_age: int = USERBOT_UPDATE_COOLDOWN + 10) -> bool:
+def is_userbot_cache_fresh(max_age: int = 55) -> bool:
     """
     Проверяет, актуален ли кеш userbot.
 
@@ -65,20 +103,37 @@ def filter_gifts_by_profile(gifts: list[dict], profile: dict) -> list[dict]:
     ]
 
 
-async def get_best_gift_list(bot, profile: dict) -> list[dict]:
+async def get_best_gift_list(user_id: int, bot: Bot, profile: dict) -> list[dict]:
     """
-    Возвращает наиболее полный список подарков — либо от бота, либо от userbot,
+    Возвращает наиболее полный список подарков — либо от Redis, либо от бота, либо от userbot,
     в зависимости от того, где подарков больше, при условии фильтрации под профиль.
 
     :param bot: Объект aiogram-бота
-    :param user_id: Telegram ID владельца userbot-сессии
     :param profile: Словарь с параметрами профиля (фильтрация по цене, количеству и т.д.)
     :return: Отфильтрованный список подарков (в виде list[dict])
     """
     global userbot_all_gifts
+    config = await get_valid_config(user_id)
+    userbot_config = config.get("USERBOT", {})
+    base_interval = userbot_config["UPDATE_INTERVAL"]
+    use_redis = get_use_redis()
+
+    gifts_redis = []
+    try:
+        if use_redis:
+            gifts_redis, state_redis = await get_redis_filtered_gifts(
+                profile["MIN_PRICE"],
+                profile["MAX_PRICE"],
+                profile["MIN_SUPPLY"],
+                profile["MAX_SUPPLY"]
+            )
+            if state_redis: # Если данные получены из Redis
+                return gifts_redis
+    except Exception as e:
+        logger.error(f"Ошибка получения списка подарков из Redis: {e}")
 
     try:
-        gifts_bot = await get_filtered_gifts(
+        gifts_bot = await get_bot_filtered_gifts(
             bot,
             profile["MIN_PRICE"],
             profile["MAX_PRICE"],
@@ -91,7 +146,7 @@ async def get_best_gift_list(bot, profile: dict) -> list[dict]:
 
     gifts_userbot = filter_gifts_by_profile(userbot_all_gifts, profile)
 
-    if is_userbot_cache_fresh() and len(gifts_userbot) > len(gifts_bot):
+    if is_userbot_cache_fresh(base_interval + 10) and len(gifts_userbot) > len(gifts_bot):
         return gifts_userbot
-    
+
     return gifts_bot

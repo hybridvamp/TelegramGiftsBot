@@ -1,3 +1,15 @@
+"""
+Модуль покупки подарков через Pyrogram userbot.
+
+Этот модуль содержит функции для:
+- Покупки подарков через userbot.
+- Обработки ошибок и повторных попыток при покупке.
+- Тестирования покупки подарков в режиме разработки.
+
+Основные функции:
+- buy_gift_userbot: Покупает подарок через Pyrogram userbot.
+"""
+
 # --- Стандартные библиотеки ---
 import asyncio
 import logging
@@ -23,10 +35,10 @@ logger = logging.getLogger(__name__)
 async def buy_gift_userbot(
     session_user_id: int,
     gift_id: int,
-    target_user_id: int,
-    target_chat_id: str,
+    target_user_id: int | None,
+    target_chat_id: str | None,
     gift_price: int,
-    file_id=None,
+    file_id: str | None = None,
     retries: int = 3,
     add_test_purchases: bool = False
 ) -> bool:
@@ -62,7 +74,7 @@ async def buy_gift_userbot(
         return False
 
     client: Client = await get_userbot_client(session_user_id)
-    if not client:
+    if client is None:
         logger.error("Не удалось получить объект клиента userbot.")
         return False
 
@@ -87,7 +99,7 @@ async def buy_gift_userbot(
             return True
         
         except FloodWait as e:
-            logger.error(f"Flood wait: ждём {e.retry_after} секунд")
+            logger.error(f"Flood wait: ждём {e.value} секунд")
             await asyncio.sleep(e.value)
 
         except BadRequest as e:

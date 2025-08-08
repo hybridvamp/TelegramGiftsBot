@@ -1,3 +1,15 @@
+"""
+Модуль middleware для контроля доступа.
+
+Этот модуль содержит классы и функции для:
+- Ограничения доступа к боту только для разрешённых пользователей.
+- Отображения гостевого меню для неразрешённых пользователей.
+
+Основные классы и функции:
+- AccessControlMiddleware: Middleware для проверки доступа.
+- show_guest_menu: Показывает гостевое меню.
+"""
+
 # --- Стандартные библиотеки ---
 import logging
 
@@ -15,7 +27,7 @@ class AccessControlMiddleware(BaseMiddleware):
     FREE_CALLBACKS = {"guest_deposit_menu"}
     FREE_STATES = {"ConfigWizard:guest_deposit_amount"}
 
-    def __init__(self, allowed_user_ids: list[int]):
+    def __init__(self, allowed_user_ids: list[int]) -> None:
         """
         :param allowed_user_ids: Список разрешённых user_id.
         :param bot: Экземпляр бота.
@@ -23,7 +35,7 @@ class AccessControlMiddleware(BaseMiddleware):
         self.allowed_user_ids = allowed_user_ids
         super().__init__()
 
-    async def __call__(self, handler, event: TelegramObject, data: dict):
+    async def __call__(self, handler: callable, event: TelegramObject, data: dict) -> None:
         """
         Проверяет наличие пользователя в списке разрешённых.
         При отказе отправляет уведомление и блокирует обработку.
@@ -54,7 +66,7 @@ class AccessControlMiddleware(BaseMiddleware):
             return
         return await handler(event, data)
     
-async def show_guest_menu(message: Message):
+async def show_guest_menu(message: Message) -> None:
     """
     Показывает гостевое меню для неразрешённых пользователей.
     """

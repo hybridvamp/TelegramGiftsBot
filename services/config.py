@@ -1,3 +1,22 @@
+"""
+Модуль конфигурации и профилей.
+
+Этот модуль содержит функции для:
+- Управления конфигурацией приложения.
+- Создания, обновления, удаления и валидации профилей.
+- Форматирования данных для отображения в меню.
+- Миграции конфигурации в новый формат.
+
+Основные функции:
+- ensure_config: Гарантирует существование config.json.
+- load_config: Загружает конфиг из файла.
+- save_config: Сохраняет конфиг в файл.
+- validate_config: Валидирует глобальный конфиг и профили.
+- get_valid_config: Загружает и валидирует конфиг.
+- migrate_config_if_needed: Мигрирует конфиг в новый формат.
+- format_config_summary: Формирует текст для главного меню.
+"""
+
 # --- Стандартные библиотеки ---
 import json
 import os
@@ -9,20 +28,136 @@ import aiofiles
 
 logger = logging.getLogger(__name__)
 
-CURRENCY = 'XTR'
-VERSION = '1.3.0'
-CONFIG_PATH = "config.json"
+CURRENCY = 'XTR' # Валюта приложения
+VERSION = '1.4.0' # Версия приложения
+CONFIG_PATH = "config.json" # Путь к файлу конфигурации
 DEV_MODE = False # Покупка тестовых подарков
+MORE_LOGS = False # Логировать больше информации в консоль
 MAX_PROFILES = 3 # Максимальная длина сообщения 4096 символов
 PURCHASE_COOLDOWN = 0.3 # Количество покупок в секунду
-USERBOT_UPDATE_COOLDOWN = 50 # Базовая величина ожидания в секундах для запроса списка подарков через юзербот
-ALLOWED_USER_IDS = []
+USE_PROXY_BOT = False # Использовать прокси для бота
+USE_PROXY_USERBOT = False # Использовать прокси для юзербота
+USE_REDIS = False # Использовать Redis для кэша подарков.
+REDIS_HOST = "localhost"  # Адрес Redis сервера
+REDIS_PORT = 6379  # Порт Redis сервера
+ALLOWED_USER_IDS = []  # Список разрешённых пользователей (Beta-версия, не рекомендуется использовать больше одного пользователя в продакшене)
 
-def add_allowed_user(user_id):
+# Список моделей устройств, системных версий и версий приложений для инициализации сессии юзербота
+DEVICE_MODELS = [
+    "Honor HONOR 70", "Samsung Galaxy S21", "Xiaomi Mi 11", "Google Pixel 6",
+    "OnePlus 9", "Sony Xperia 5", "Huawei P50", "Nokia X20", "Motorola Edge 20", 
+    "Apple iPhone 13", "Apple iPhone 14", "Apple iPhone 15"
+]
+SYSTEM_VERSIONS = [
+    "SDK 35", "SDK 34", "SDK 33", "SDK 32", 
+    "SDK 31", "SDK 30", "SDK 29", "SDK 28", 
+    "SDK 27", "iOS 15.4", "iOS 16.0", "iOS 17.0"
+]
+APP_VERSIONS = [
+    "Telegram Android 11.13.1", "Telegram Android 11.12.0", "Telegram Android 11.11.0", 
+    "Telegram Android 11.10.0", "Telegram Android 11.9.0", "Telegram Android 11.8.0", 
+    "Telegram Android 11.7.0", "Telegram Android 11.6.0", "Telegram Android 11.5.0", 
+    "Telegram iOS 10.4.1", "Telegram iOS 10.0.0", "Telegram iOS 11.0.0"
+]
+
+
+def add_allowed_user(user_id: int) -> None:
+    """
+    Добавляет пользователя в список разрешённых.
+    :param user_id: ID пользователя
+    """
     ALLOWED_USER_IDS.append(user_id)
+    logger.info(f"Пользователь {user_id} добавлен в список разрешённых.")
+
+
+def get_allowed_users() -> list[int]:
+    """
+    Возвращает список разрешённых пользователей.
+    :return: Список ID разрешённых пользователей
+    """
+    return ALLOWED_USER_IDS
+
+
+def set_use_redis(value: bool) -> None:
+    """
+    Обновляет значение USE_REDIS в конфигурации.
+    :param value: Новое значение для USE_REDIS (True или False)
+    """
+    global USE_REDIS
+    USE_REDIS = value
+    logger.info(f"Использовать Redis для кэша подарков: {USE_REDIS}")
+
+
+def get_use_redis() -> bool:
+    """
+    Возвращает текущее значение USE_REDIS.
+    :return: True, если Redis используется, иначе False
+    """
+    return USE_REDIS
+
+
+def set_redis_config(host: str, port: int) -> None:
+    """
+    Устанавливает параметры подключения к Redis.
+    :param host: Адрес Redis сервера
+    :param port: Порт Redis сервера
+    """
+    global REDIS_HOST, REDIS_PORT
+    REDIS_HOST = host
+    REDIS_PORT = port
+    logger.info(f"Настройки Redis обновлены: {REDIS_HOST}:{REDIS_PORT}")
+
+
+def get_redis_config() -> tuple[str, int]:
+    """
+    Возвращает текущие настройки Redis.
+    :return: Кортеж (REDIS_HOST, REDIS_PORT)
+    """
+    return REDIS_HOST, REDIS_PORT
+
+
+def set_use_proxy_bot(value: bool) -> None:
+    """
+    Обновляет значение USE_PROXY_BOT в конфигурации.
+    :param value: Новое значение для USE_PROXY_BOT (True или False)
+    """
+    global USE_PROXY_BOT
+    USE_PROXY_BOT = value
+    logger.info(f"Использовать прокси для бота: {USE_PROXY_BOT}")
+
+
+def get_use_proxy_bot() -> bool:
+    """
+    Возвращает текущее значение USE_PROXY_BOT.
+    :return: True, если прокси используется для бота, иначе False
+    """
+    return USE_PROXY_BOT
+
+
+def set_use_proxy_userbot(value: bool) -> None:
+    """
+    Обновляет значение USE_PROXY_USERBOT в конфигурации.
+    :param value: Новое значение для USE_PROXY_USERBOT (True или False)
+    """
+    global USE_PROXY_USERBOT
+    USE_PROXY_USERBOT = value
+    logger.info(f"Использовать прокси для юзербота: {USE_PROXY_USERBOT}")
+
+
+def get_use_proxy_userbot() -> bool:
+    """
+    Возвращает текущее значение USE_PROXY_USERBOT.
+    :return: True, если прокси используется для юзербота, иначе False
+    """
+    return USE_PROXY_USERBOT
+
 
 def DEFAULT_PROFILE(user_id: int) -> dict:
-    """Создаёт профиль с дефолтными настройками для указанного пользователя."""
+    """
+    Создаёт профиль с дефолтными настройками для указанного пользователя.
+    :param user_id: ID пользователя
+    :return: Словарь профиля
+    """
     return {
         "NAME": None,
         "MIN_PRICE": 5000,
@@ -40,11 +175,17 @@ def DEFAULT_PROFILE(user_id: int) -> dict:
         "DONE": False
     }
 
+
 def DEFAULT_CONFIG(user_id: int) -> dict:
-    """Дефолтная конфигурация: глобальные поля + список профилей."""
+    """
+    Дефолтная конфигурация: глобальные поля + список профилей.
+    :param user_id: ID пользователя
+    :return: Словарь конфигурации
+    """
     return {
         "BALANCE": 0,
         "ACTIVE": False,
+        "DEPOSIT_ENBALE": False,
         "LAST_MENU_MESSAGE_ID": None,
         "PROFILES": [DEFAULT_PROFILE(user_id)],
         "USERBOT": {
@@ -54,9 +195,12 @@ def DEFAULT_CONFIG(user_id: int) -> dict:
             "USER_ID": None,
             "USERNAME": None,
             "BALANCE": 0,
-            "ENABLED": False
+            "ENABLED": False,
+            "CONFIG_ID": None,
+            "UPDATE_INTERVAL": 45
         }
     }
+
 
 # Типы и требования для каждого поля профиля
 PROFILE_TYPES = {
@@ -76,19 +220,25 @@ PROFILE_TYPES = {
     "DONE": (bool, False),
 }
 
+
 # Типы и требования для глобальных полей
 CONFIG_TYPES = {
     "BALANCE": (int, False),
     "ACTIVE": (bool, False),
+    "DEPOSIT_ENBALE": (bool, False),
     "LAST_MENU_MESSAGE_ID": (int, True),
     "PROFILES": (list, False),
     "USERBOT": (dict, False)
 }
 
 
-def is_valid_type(value, expected_type, allow_none=False):
+def is_valid_type(value: object, expected_type: type, allow_none: bool = False) -> bool:
     """
     Проверяет тип значения с учётом допуска None.
+    :param value: Проверяемое значение
+    :param expected_type: Ожидаемый тип
+    :param allow_none: Разрешён ли None
+    :return: True если тип корректен
     """
     if value is None:
         return allow_none
@@ -98,6 +248,8 @@ def is_valid_type(value, expected_type, allow_none=False):
 async def ensure_config(user_id: int, path: str = CONFIG_PATH):
     """
     Гарантирует существование config.json.
+    :param user_id: ID пользователя
+    :param path: Путь к файлу конфигурации
     """
     if not os.path.exists(path):
         async with aiofiles.open(path, mode="w", encoding="utf-8") as f:
@@ -108,6 +260,8 @@ async def ensure_config(user_id: int, path: str = CONFIG_PATH):
 async def load_config(path: str = CONFIG_PATH) -> dict:
     """
     Загружает конфиг из файла (без валидации). Гарантирует, что файл существует.
+    :param path: Путь к файлу конфигурации
+    :return: Словарь конфигурации
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Файл {path} не найден. Используйте ensure_config.")
@@ -119,6 +273,8 @@ async def load_config(path: str = CONFIG_PATH) -> dict:
 async def save_config(config: dict, path: str = CONFIG_PATH):
     """
     Сохраняет конфиг в файл.
+    :param config: Словарь конфигурации
+    :param path: Путь к файлу
     """
     async with aiofiles.open(path, mode="w", encoding="utf-8") as f:
         await f.write(json.dumps(config, indent=2))
@@ -128,6 +284,9 @@ async def save_config(config: dict, path: str = CONFIG_PATH):
 async def validate_profile(profile: dict, user_id: Optional[int] = None) -> dict:
     """
     Валидирует один профиль.
+    :param profile: Словарь профиля
+    :param user_id: ID пользователя
+    :return: Валидированный профиль
     """
     valid = {}
     default = DEFAULT_PROFILE(user_id or 0)
@@ -142,6 +301,9 @@ async def validate_profile(profile: dict, user_id: Optional[int] = None) -> dict
 async def validate_config(config: dict, user_id: int) -> dict:
     """
     Валидирует глобальный конфиг и все профили.
+    :param config: Словарь конфигурации
+    :param user_id: ID пользователя
+    :return: Валидированный конфиг
     """
     valid = {}
     default = DEFAULT_CONFIG(user_id)
@@ -175,6 +337,9 @@ async def validate_config(config: dict, user_id: int) -> dict:
 async def get_valid_config(user_id: int, path: str = CONFIG_PATH) -> dict:
     """
     Загружает, валидирует и при необходимости обновляет config.json.
+    :param user_id: ID пользователя
+    :param path: Путь к файлу конфигурации
+    :return: Валидированный конфиг
     """
     await ensure_config(user_id, path)
     config = await load_config(path)
@@ -189,6 +354,8 @@ async def migrate_config_if_needed(user_id: int, path: str = CONFIG_PATH):
     """
     Проверяет и преобразует config.json из старого формата (без PROFILES)
     в новый (список профилей). Работает асинхронно.
+    :param user_id: ID пользователя
+    :param path: Путь к файлу конфигурации
     """
     if not os.path.exists(path):
         return
@@ -227,6 +394,7 @@ async def migrate_config_if_needed(user_id: int, path: str = CONFIG_PATH):
     # Собираем новый формат
     new_config = {
         "BALANCE": config.get("BALANCE", 0),
+        "DEPOSIT_ENBALE": config.get("DEPOSIT_ENBALE", False),
         "ACTIVE": config.get("ACTIVE", False),
         "LAST_MENU_MESSAGE_ID": config.get("LAST_MENU_MESSAGE_ID"),
         "PROFILES": [profile],
@@ -237,12 +405,32 @@ async def migrate_config_if_needed(user_id: int, path: str = CONFIG_PATH):
     logger.info(f"Конфиг {path} мигрирован в новый формат.")
 
 
-# ------------- Работа с профилями -----------------
+async def update_config_from_env(path: str = CONFIG_PATH, config_data: str = None):
+    """
+    Обновляет конфиг из переменной среды CONFIG_DATA.
+    :param path: Путь к файлу конфигурации
+    :param config_data: Данные конфигурации в формате JSON
+    """
+    try:
+        config_dict = json.loads(config_data)
+    except Exception as e:
+        logger.error(f"CONFIG_DATA не является валидным JSON: {e}")
+        return
+
+    try:
+        async with aiofiles.open(path, mode="w", encoding="utf-8") as f:
+            await f.write(json.dumps(config_dict, indent=2, ensure_ascii=False))
+        logger.info(f"Конфиг успешно обновлён из переменной среды CONFIG_DATA.")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении конфига из CONFIG_DATA: {e}")
 
 
 async def get_profile(config: dict, index: int = 0) -> dict:
     """
     Получить профиль по индексу (по умолчанию первый).
+    :param config: Словарь конфигурации
+    :param index: Индекс профиля
+    :return: Словарь профиля
     """
     profiles = config.get("PROFILES", [])
     if not profiles:
@@ -253,6 +441,10 @@ async def get_profile(config: dict, index: int = 0) -> dict:
 async def add_profile(config: dict, profile: dict, save: bool = True) -> dict:
     """
     Добавляет новый профиль в конфиг.
+    :param config: Словарь конфигурации
+    :param profile: Новый профиль
+    :param save: Сохранять ли конфиг
+    :return: Обновлённый конфиг
     """
     config.setdefault("PROFILES", []).append(profile)
     if save:
@@ -263,6 +455,11 @@ async def add_profile(config: dict, profile: dict, save: bool = True) -> dict:
 async def update_profile(config: dict, index: int, new_profile: dict, save: bool = True) -> dict:
     """
     Обновляет профиль по индексу.
+    :param config: Словарь конфигурации
+    :param index: Индекс профиля
+    :param new_profile: Новый профиль
+    :param save: Сохранять ли конфиг
+    :return: Обновлённый конфиг
     """
     if "PROFILES" not in config or index >= len(config["PROFILES"]):
         raise IndexError("Профиль не найден")
@@ -275,6 +472,11 @@ async def update_profile(config: dict, index: int, new_profile: dict, save: bool
 async def remove_profile(config: dict, index: int, user_id: int, save: bool = True) -> dict:
     """
     Удаляет профиль по индексу.
+    :param config: Словарь конфигурации
+    :param index: Индекс профиля
+    :param user_id: ID пользователя
+    :param save: Сохранять ли конфиг
+    :return: Обновлённый конфиг
     """
     if "PROFILES" not in config or index >= len(config["PROFILES"]):
         raise IndexError("Профиль не найден")
@@ -287,7 +489,21 @@ async def remove_profile(config: dict, index: int, user_id: int, save: bool = Tr
     return config
 
 
-# ------------- Форматирование ---------------------
+async def get_deposit_enabled() -> bool:
+    """
+    Возвращает статус DEPOSIT_ENBALE из config.json (True/False).
+    Если конфиг отсутствует или параметр не найден — возвращает False.
+    :return: True если депозит включён, иначе False
+    """
+    if not os.path.exists(CONFIG_PATH):
+        return False
+    async with aiofiles.open(CONFIG_PATH, mode="r", encoding="utf-8") as f:
+        data = await f.read()
+        try:
+            config = json.loads(data)
+        except Exception:
+            return False
+    return bool(config.get("DEPOSIT_ENBALE", False))
 
 
 def format_config_summary(config: dict, user_id: int) -> str:
@@ -366,7 +582,14 @@ def get_target_display(profile: dict, user_id: int) -> str:
     
 
 def get_target_display_local(target_user_id: int, target_chat_id: str, user_id: int) -> str:
-    """Возвращает строковое описание получателя подарка на основе выбранного получателя и user_id."""
+    """
+    Возвращает строковое описание получателя подарка на основе выбранного получателя и user_id.
+    Если оба параметра равны None, возвращает пустую строку.
+    :param target_user_id: ID пользователя
+    :param target_chat_id: ID чата
+    :param user_id: ID текущего пользователя
+    :return: строка для меню
+    """
     if target_chat_id:
         return f"{target_chat_id}"
     elif str(target_user_id) == str(user_id):

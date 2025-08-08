@@ -1,19 +1,39 @@
+"""
+Модуль работы с балансом звёзд.
+
+Этот модуль содержит функции для:
+- Получения текущего баланса звёзд через API бота.
+- Обновления баланса звёзд в конфиге.
+- Изменения баланса звёзд с учётом ограничений.
+- Возврата звёзд по депозитам без возврата.
+
+Основные функции:
+- get_stars_balance: Получает текущий баланс звёзд через API бота.
+- refresh_balance: Обновляет баланс звёзд в конфиге.
+- change_balance: Изменяет баланс звёзд в конфиге.
+- refund_all_star_payments: Возвращает звёзды по депозитам без возврата.
+"""
+
 # --- Стандартные библиотеки ---
 from itertools import combinations
 import logging
+from typing import Callable, Awaitable, Any
 
 # --- Внутренние модули ---
 from services.config import load_config, save_config
 from services.userbot import get_userbot_stars_balance
 
 # --- Сторонние библиотеки ---
+from aiogram import Bot
 from aiogram.types.star_amount import StarAmount
 
 logger = logging.getLogger(__name__)
 
-async def get_stars_balance(bot) -> int:
+async def get_stars_balance(bot: Bot) -> int:
     """
-    Получает баланс звёзд через API бота (актуальный метод).
+    Получает текущий баланс звёзд через API бота.
+    :param bot: Экземпляр бота
+    :return: Баланс звёзд (int)
     """
     star_amount: StarAmount = await bot.get_my_star_balance()
     balance = star_amount.amount
@@ -21,9 +41,11 @@ async def get_stars_balance(bot) -> int:
     return balance
 
 
-async def get_stars_balance_by_transactions(bot) -> int:
+async def get_stars_balance_by_transactions(bot: Bot) -> int:
     """
-    Получает суммарный баланс звёзд по всем транзакциям пользователя через API бота (устаревший метод).
+    Получает баланс звёзд по всем транзакциям пользователя через API бота (устаревший метод).
+    :param bot: Экземпляр бота
+    :return: Баланс звёзд (int)
     """
     offset = 0
     limit = 100
@@ -49,9 +71,11 @@ async def get_stars_balance_by_transactions(bot) -> int:
     return balance
 
 
-async def refresh_balance(bot) -> int:
+async def refresh_balance(bot: Bot) -> int:
     """
-    Обновляет и сохраняет баланс звёзд в конфиге, возвращает актуальное значение.
+    Обновляет баланс звёзд в конфиге и возвращает актуальное значение.
+    :param bot: Экземпляр бота
+    :return: Баланс звёзд (int)
     """
     # Загрузка конфига
     config = await load_config()
@@ -85,7 +109,9 @@ async def refresh_balance(bot) -> int:
 
 async def change_balance(delta: int) -> int:
     """
-    Изменяет баланс звёзд в конфиге на указанное значение delta, не допуская отрицательных значений.
+    Изменяет баланс звёзд в конфиге на delta, не допуская отрицательных значений.
+    :param delta: Изменение баланса (int)
+    :return: Новый баланс (int)
     """
     config = await load_config()
     config["BALANCE"] = max(0, config.get("BALANCE", 0) + delta)
@@ -96,7 +122,9 @@ async def change_balance(delta: int) -> int:
 
 async def change_balance_userbot(delta: int) -> int:
     """
-    Изменяет баланс звёзд юзербота в конфиге на указанное значение delta, не допуская отрицательных значений.
+    Изменяет баланс звёзд юзербота в конфиге на delta, не допуская отрицательных значений.
+    :param delta: Изменение баланса (int)
+    :return: Новый баланс юзербота (int)
     """
     config = await load_config()
     userbot = config.get("USERBOT", {})
@@ -108,11 +136,20 @@ async def change_balance_userbot(delta: int) -> int:
     return new_balance
 
 
-async def refund_all_star_payments(bot, username, user_id, message_func=None):
+async def refund_all_star_payments(
+    bot: Bot,
+    username: str,
+    user_id: int,
+    message_func: Callable[[str], Awaitable[Any]] = None
+) -> dict:
     """
-    Возвращает звёзды только по депозитам без возврата, совершённым указанным username.
+    Возвращает звёзды по депозитам без возврата, совершённым указанным username.
     Подбирает оптимальную комбинацию для вывода максимально возможной суммы.
-    При необходимости сообщает пользователю о дальнейших действиях.
+    :param bot: Экземпляр бота
+    :param username: Username пользователя
+    :param user_id: ID пользователя
+    :param message_func: Функция для отправки сообщений пользователю (опционально)
+    :return: Словарь с результатами возврата
     """
     balance = await refresh_balance(bot)
     if balance <= 0:
@@ -215,5 +252,6 @@ async def refund_all_star_payments(bot, username, user_id, message_func=None):
 async def get_userbot_balance() -> int:
     """
     Получает баланс звёзд у userbot-сессии.
+    :return: Баланс юзербота (int)
     """
     return await get_userbot_stars_balance()
