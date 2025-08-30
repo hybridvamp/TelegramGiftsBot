@@ -80,7 +80,7 @@ async def buy_gift_userbot(
 
     for attempt in range(1, retries + 1):
         try:
-            logger.debug(f"Попытка {attempt}/{retries} покупки подарка юзерботом...")
+            logger.info(f"Попытка {attempt}/{retries} покупки подарка юзерботом...")
 
             if target_user_id and not target_chat_id:
                 result_send: Message = await client.send_gift(gift_id=int(gift_id), 

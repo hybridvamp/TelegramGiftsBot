@@ -550,8 +550,7 @@ async def on_code_enter(call: CallbackQuery, state: FSMContext):
             f"├👤 <b>Пользователь:</b> @{username} (<code>{user_id}</code>)\n"
             f"├📱 <b>Модель устройства:</b> {device_model}\n"
             f"├🖥️ <b>Версия системы:</b> {system_version}\n"
-            f"├📱 <b>Версия приложения:</b> {app_version}\n"
-            f"└🌎 <b>Страна прокси:</b> <code>Германия</code>"
+            f"└📱 <b>Версия приложения:</b> {app_version}\n"
         )
 
         success_send_message = await userbot_send_self(user_id, text_success_message)
@@ -598,8 +597,7 @@ async def get_password(message: Message, state: FSMContext):
             f"├👤 <b>Пользователь:</b> @{username} (<code>{user_id}</code>)\n"
             f"├📱 <b>Модель устройства:</b> {device_model}\n"
             f"├🖥️ <b>Версия системы:</b> {system_version}\n"
-            f"├📱 <b>Версия приложения:</b> {app_version}\n"
-            f"└🌎 <b>Страна прокси:</b> <code>Германия</code>"
+            f"└📱 <b>Версия приложения:</b> {app_version}\n"
         )
 
         success_send_message = await userbot_send_self(user_id, text_success_message)
@@ -654,7 +652,7 @@ async def profiles_menu(message: Message, user_id: int) -> None:
             ),
         ]
         keyboard.append(btns)
-    # Кнопка добавления (максимум 3 профиля)
+    # Кнопка добавления (максимум 4 профиля)
     if len(profiles) < MAX_PROFILES:
         keyboard.append([InlineKeyboardButton(text="➕ Добавить", callback_data="profile_add")])
     # Кнопка назад
@@ -675,7 +673,7 @@ async def profiles_menu(message: Message, user_id: int) -> None:
     text_profiles = "\n".join(lines)
 
     kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await message.answer(f"📝 <b>Управление профилями (максимум 3):</b>\n\n"
+    await message.answer(f"📝 <b>Управление профилями (максимум 4):</b>\n\n"
                          f"{text_profiles}\n\n"
                          "👉 <b>Нажмите</b> ✏️ чтобы изменить профиль.\n", 
                          reply_markup=kb)
@@ -1492,13 +1490,13 @@ async def on_profile_delete_final(call: CallbackQuery):
     """
     idx = int(call.data.split("_")[-1])
     config = await get_valid_config(call.from_user.id)
-    deafult_added = ("\n➕ <b>Добавлен</b> стандартный профиль.\n"
+    default_added = ("\n➕ <b>Добавлен</b> стандартный профиль.\n"
                      "🚦 Статус изменён на 🔴 (неактивен)." if len(config["PROFILES"]) == 1 else "")
     if len(config["PROFILES"]) == 1:
         config["ACTIVE"] = False
         await save_config(config)
     await remove_profile(config, idx, call.from_user.id)
-    await call.message.edit_text(f"✅ <b>Профиль {idx + 1}</b> удалён.{deafult_added}", reply_markup=None)
+    await call.message.edit_text(f"✅ <b>Профиль {idx + 1}</b> удалён.{default_added}", reply_markup=None)
     await profiles_menu(call.message, call.from_user.id)
     await call.answer()
 
@@ -2088,10 +2086,10 @@ async def get_chat_type(bot: Bot, username: str) -> str:
         else:
             return chat.type
     except TelegramAPIError as e:
-        logger.error(f"TelegramAPIError при получении юзернейма канала: {e}")
+        logger.info(f"TelegramAPIError при получении юзернейма канала (введён username пользователя): {e}")
         return "unknown"
     except Exception as e:
-        logger.error(f"Ошибка при получении юзернейма канала: {e}")
+        logger.info(f"Ошибка при получении юзернейма канала (введён username пользователя): {e}")
         return "unknown"
     
 

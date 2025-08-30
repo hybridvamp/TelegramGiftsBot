@@ -230,7 +230,8 @@ async def create_userbot_client(
         app_version=APP_VERSIONS[config_id],
         sleep_threshold=30,
         lang_code="en",
-        skip_updates=False,
+        no_updates=True,
+        skip_updates=True,
         proxy=proxy_settings
     )
 

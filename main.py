@@ -27,6 +27,7 @@ from aiogram.utils.backoff import BackoffConfig
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from pyrogram.errors import SecurityCheckMismatch
 
 # --- Внутренние модули ---
 from services.config import (
@@ -41,11 +42,13 @@ from services.config import (
     update_config_from_env,
     VERSION,
     PURCHASE_COOLDOWN,
-    MORE_LOGS
+    MORE_LOGS,
+    DEFAULT_BOT_DELAY,
+    REQUEST_PROFILE
 )
 from services.menu import update_menu
 from services.balance import refresh_balance
-from services.gifts_manager import get_best_gift_list, userbot_gifts_updater
+from services.gifts_manager import get_best_gift_list, userbot_gifts_updater, filter_gifts_by_profile
 from services.buy_bot import buy_gift
 from services.buy_userbot import buy_gift_userbot
 from services.userbot import try_start_userbot_from_config
@@ -55,11 +58,13 @@ from handlers.handlers_main import register_main_handlers
 from utils.logging import setup_logging
 from utils.proxy import get_aiohttp_session
 from utils.env_loader import get_env_variable
+from utils.log_cache import LOG_CACHE_HANDLER
 from middlewares.access_control import AccessControlMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
 
 setup_logging()
 logger = logging.getLogger(__name__)
+logging.getLogger().addHandler(LOG_CACHE_HANDLER)
 
 TOKEN = get_env_variable("TELEGRAM_BOT_TOKEN")
 USER_ID = int(get_env_variable("TELEGRAM_USER_ID", 0))
@@ -90,6 +95,9 @@ async def gift_purchase_worker(bot: Bot) -> None:
             progress_made = False  # Был ли прогресс по профилям на этом проходе
             any_success = True
 
+            # Получаем полный список лимитных подарков
+            all_gifts = await get_best_gift_list(USER_ID, bot, REQUEST_PROFILE)
+
             for profile_index, profile in enumerate(config["PROFILES"]):
                 # Пропускаем завершённые профили
                 if profile.get("DONE"):
@@ -106,9 +114,10 @@ async def gift_purchase_worker(bot: Bot) -> None:
                 TARGET_USER_ID = profile["TARGET_USER_ID"]
                 TARGET_CHAT_ID = profile["TARGET_CHAT_ID"]
 
-                filtered_gifts = await get_best_gift_list(USER_ID, bot, profile)
+                # Фильтруем полный список подарков под текущий профиль
+                filtered_gifts = filter_gifts_by_profile(all_gifts, profile)
                 if MORE_LOGS:
-                    logger.debug(f"Доступно подарков после фильтрации: {len(filtered_gifts)}")
+                    logger.info(f"Доступно подарков после фильтрации в профиле {profile_index}: {len(filtered_gifts)}")
 
                 if not filtered_gifts:
                     continue
@@ -277,7 +286,7 @@ async def gift_purchase_worker(bot: Bot) -> None:
         except Exception as e:
             logger.error(f"Ошибка в gift_purchase_worker: {e}")
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(DEFAULT_BOT_DELAY)
 
 
 async def main() -> None:
@@ -329,6 +338,22 @@ async def main() -> None:
     ))
     dp.message.middleware(AccessControlMiddleware(ALLOWED_USER_IDS))
     dp.callback_query.middleware(AccessControlMiddleware(ALLOWED_USER_IDS))
+
+    # Простая защита: отключение громоздких traceback'ов SecurityCheckMismatch
+    def _loop_exception_handler(loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, SecurityCheckMismatch):
+            logger.warning("Pyrogram SecurityCheckMismatch — подробный traceback отключён.")
+            return
+        loop.default_exception_handler(context)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(_loop_exception_handler)
+    except RuntimeError:
+        logger.info("Нет запущенного event loop для установки обработчика исключений.")
+
+    logging.getLogger("pyrogram").setLevel(logging.INFO)
 
     register_wizard_handlers(dp)
     register_catalog_handlers(dp)

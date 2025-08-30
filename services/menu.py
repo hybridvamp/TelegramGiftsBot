@@ -65,6 +65,9 @@ def config_action_keyboard(active: bool) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🎏 Каталог", callback_data="catalog"),
             InlineKeyboardButton(text="❓ Помощь", callback_data="show_help")
+        ],
+        [
+            InlineKeyboardButton(text="📄 Логи", callback_data="log")
         ]
     ])
 

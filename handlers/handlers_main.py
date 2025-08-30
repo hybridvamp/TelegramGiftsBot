@@ -34,6 +34,7 @@ from services.balance import refresh_balance
 from services.buy_bot import buy_gift
 from services.buy_userbot import buy_gift_userbot
 from middlewares.access_control import show_guest_menu
+from utils.log_cache import get_cached_text
 
 def register_main_handlers(dp: Dispatcher, bot: Bot, version: str) -> None:
     """
@@ -258,6 +259,30 @@ def register_main_handlers(dp: Dispatcher, bot: Bot, version: str) -> None:
             reply_markup=config_action_keyboard(config["ACTIVE"])
         )
         await call.answer("Статус обновлён")
+
+
+    @dp.callback_query(F.data == "log")
+    async def send_logs_callback(call: CallbackQuery) -> None:
+        """Отправка последних кэшированных логов пользователю."""
+        await call.answer()
+        try:
+            text = get_cached_text()
+            if not text:
+                await call.message.answer("⚠️ Логи пусты.")
+                return
+            # Лимит на размер сообщения Telegram: оставляем хвост логов, затем экранируем
+            max_chars = 3800
+            if len(text) > max_chars:
+                # Обрезаем текст по последнему переходу на новую строку
+                text = text[-max_chars:]
+                first_newline = text.find('\n')
+                if first_newline != -1 and first_newline < len(text):
+                    text = text[first_newline + 1:]
+            header = f"📄 Логи (последние {text.count('\n') + 1} строк):\n"
+            await call.message.answer(f"{header}<pre>{text}</pre>")
+            await update_menu(bot=bot, chat_id=call.message.chat.id, user_id=call.from_user.id, message_id=call.message.message_id)
+        except Exception as e:
+            await call.message.answer(f"Ошибка при получении логов: {e}")
 
 
     @dp.pre_checkout_query()
