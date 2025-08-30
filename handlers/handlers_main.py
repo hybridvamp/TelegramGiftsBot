@@ -278,7 +278,7 @@ def register_main_handlers(dp: Dispatcher, bot: Bot, version: str) -> None:
                 first_newline = text.find('\n')
                 if first_newline != -1 and first_newline < len(text):
                     text = text[first_newline + 1:]
-            header = f"📄 Логи (последние {text.count('\n') + 1} строк):\n"
+            header = "📄 Логи (последние {} строк):\n".format(text.count("\n") + 1)
             await call.message.answer(f"{header}<pre>{text}</pre>")
             await update_menu(bot=bot, chat_id=call.message.chat.id, user_id=call.from_user.id, message_id=call.message.message_id)
         except Exception as e:
